@@ -4,7 +4,7 @@ import Dropzone from './components/Dropzone';
 import ProcessingView from './components/ProcessingView';
 import ChoiceScreen from './components/ChoiceScreen';
 import { PipelineClient } from './worker/client';
-import type { DayMonthOrder } from './lib/dates';
+import type { DateOrderMode } from './lib/dates';
 import type { Dataset } from './types';
 
 export interface ResultItem {
@@ -41,10 +41,12 @@ export default function App() {
   const [errors, setErrors] = useState<FileError[]>([]);
   const [downloaded, setDownloaded] = useState(false);
   const [dark, setDark] = useState(() => document.documentElement.classList.contains('dark'));
-  /** R3 – the day/month order used for date patterns the file never proves. */
-  const [dateOrder, setDateOrder] = useState<DayMonthOrder>('DM');
+  /** R3 – 'auto' keeps unproven dates + suggestions; DM/MD applies that order. */
+  const [dateOrder, setDateOrder] = useState<DateOrderMode>('auto');
+  /** Principle 2 – review items the user accepted; re-runs apply them. */
+  const [accepted, setAccepted] = useState<string[]>([]);
   const clientRef = useRef<PipelineClient | null>(null);
-  /** Kept so the R3 toggle can re-run the pipeline without a re-upload. */
+  /** Kept so the R3 toggle / Accept button can re-run without a re-upload. */
   const sourcesRef = useRef<Source[]>([]);
 
   useEffect(() => {
@@ -63,6 +65,7 @@ export default function App() {
     setErrors([]);
     setResults([]);
     setDownloaded(false);
+    setAccepted([]);
     setProgress({ pct: 0, message: 'Starting…', current: 1, total: files.length });
 
     const client = clientRef.current ?? (clientRef.current = new PipelineClient());
@@ -118,58 +121,78 @@ export default function App() {
   }, [dateOrder]);
 
   /**
-   * R3 – flipping the date toggle re-runs the whole pipeline on the already
-   * loaded sources; no re-upload, no manual steps.
+   * Re-run the whole pipeline on the already loaded sources – used by the R3
+   * date toggle and by "Accept" on a Needs-review suggestion. No re-upload,
+   * no manual steps.
    */
-  const handleDateOrder = useCallback(
-    async (order: DayMonthOrder) => {
-      const sources = sourcesRef.current;
-      setDateOrder(order);
-      if (sources.length === 0) return;
+  const rerun = useCallback(async (nextDateOrder: DateOrderMode, nextAccepted: string[]) => {
+    const sources = sourcesRef.current;
+    setDateOrder(nextDateOrder);
+    setAccepted(nextAccepted);
+    if (sources.length === 0) return;
 
-      setStage('processing');
-      setErrors([]);
-      setProgress({ pct: 0, message: 'Re-running with new date order…', current: 1, total: sources.length });
-      const client = clientRef.current ?? (clientRef.current = new PipelineClient());
-      const collected: ResultItem[] = [];
-      const failed: FileError[] = [];
+    setStage('processing');
+    setErrors([]);
+    setProgress({ pct: 0, message: 'Re-running with your choices…', current: 1, total: sources.length });
+    const client = clientRef.current ?? (clientRef.current = new PipelineClient());
+    const collected: ResultItem[] = [];
+    const failed: FileError[] = [];
 
-      for (let index = 0; index < sources.length; index += 1) {
-        const source = sources[index];
-        try {
-          const datasets = await client.process(
-            { name: source.name, mime: source.mime, buffer: source.bytes.slice(0), dateOrder: order },
-            (update) =>
-              setProgress({
-                pct: ((index + update.pct / 100) / sources.length) * 100,
-                message: update.message,
-                current: index + 1,
-                total: sources.length,
-              }),
-          );
-          datasets.forEach((dataset, position) => {
-            collected.push({
-              id: `${index}-${position}-${dataset.report.fileName}`,
-              fileName: dataset.report.fileName,
-              dataset,
-            });
+    for (let index = 0; index < sources.length; index += 1) {
+      const source = sources[index];
+      try {
+        const datasets = await client.process(
+          {
+            name: source.name,
+            mime: source.mime,
+            buffer: source.bytes.slice(0),
+            dateOrder: nextDateOrder,
+            acceptReviews: nextAccepted,
+          },
+          (update) =>
+            setProgress({
+              pct: ((index + update.pct / 100) / sources.length) * 100,
+              message: update.message,
+              current: index + 1,
+              total: sources.length,
+            }),
+        );
+        datasets.forEach((dataset, position) => {
+          collected.push({
+            id: `${index}-${position}-${dataset.report.fileName}`,
+            fileName: dataset.report.fileName,
+            dataset,
           });
-        } catch (error) {
-          failed.push({ name: source.name, message: error instanceof Error ? error.message : String(error) });
-        }
+        });
+      } catch (error) {
+        failed.push({ name: source.name, message: error instanceof Error ? error.message : String(error) });
       }
+    }
 
-      setProgress(null);
-      setErrors(failed);
-      if (collected.length > 0) {
-        setResults(collected);
-        setActiveIndex(0);
-        setStage('choose');
-      } else {
-        setStage('upload');
-      }
+    setProgress(null);
+    setErrors(failed);
+    if (collected.length > 0) {
+      setResults(collected);
+      setActiveIndex(0);
+      setStage('choose');
+    } else {
+      setStage('upload');
+    }
+  }, []);
+
+  /** R3 – cycle the date toggle: auto → DD-MM → MM-DD → auto. */
+  const handleDateOrder = useCallback(
+    (order: DateOrderMode) => rerun(order, accepted),
+    [accepted, rerun],
+  );
+
+  /** Principle 2 – accepting a suggestion re-runs the pipeline with it applied. */
+  const handleAcceptReview = useCallback(
+    (id: string) => {
+      if (accepted.includes(id)) return;
+      void rerun(dateOrder, [...accepted, id]);
     },
-    [],
+    [accepted, dateOrder, rerun],
   );
 
   const restart = useCallback(() => {
@@ -268,6 +291,7 @@ export default function App() {
               onRestart={restart}
               dateOrder={dateOrder}
               onDateOrderChange={handleDateOrder}
+              onAcceptReview={handleAcceptReview}
             />
             {errors.length > 0 && (
               <div className="card border-amber-300 dark:border-amber-900 p-4" role="alert">

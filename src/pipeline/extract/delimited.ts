@@ -114,7 +114,9 @@ export function parseDelimited(text: string, delimiter?: string): DelimitedResul
   if (!delimiter) {
     const multi = detectMultiDelimiter(source);
     if (multi) {
-      const lines = source.split('\n').filter((line) => line.trim() !== '');
+      // Keep every line, blank ones included: R1 classifies them into the
+      // Rejected rows table instead of this parser deleting them silently.
+      const lines = source.split('\n');
       const rows: Cell[][] = [];
       for (const line of lines) {
         const cells = line
@@ -127,9 +129,11 @@ export function parseDelimited(text: string, delimiter?: string): DelimitedResul
     }
   }
 
+  // Blank lines must survive parsing: R1 classifies them into the Rejected
+  // rows table with a reason. Skipping them here would delete data silently.
   const parsed = Papa.parse<string[]>(source, {
-    delimiter: delimiter ?? '',
-    skipEmptyLines: 'greedy',
+    delimiter: delimiter ?? detectDelimiter(source)?.delimiter ?? '',
+    skipEmptyLines: false,
     worker: false,
   });
 

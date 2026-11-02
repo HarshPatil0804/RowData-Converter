@@ -1,5 +1,6 @@
 import type { Cell, RejectedRow } from '../types';
 import { looksLikeHeaderRow } from '../lib/table';
+import { isNullSentinel } from '../lib/strings';
 
 /**
  * R1 – junk row detection, run before anything else touches the data.
@@ -11,12 +12,15 @@ import { looksLikeHeaderRow } from '../lib/table';
  * file – nothing here knows about a particular dataset.
  */
 
-/** Empty means "no content": null, undefined, or blank/whitespace text. */
+/** Empty means "no content": null, undefined, blank text or a null sentinel
+ * ("N/A", "-", "none"…). Sentinels count as empty *before* cleaning so a row
+ * of nothing but placeholders is rejected as blank instead of surviving into
+ * the clean table (invariant 1 and 5 depend on this). */
 export function isEmptyCell(cell: Cell): boolean {
   if (cell === null || cell === undefined) return true;
   if (typeof cell === 'boolean') return false;
   if (typeof cell === 'number') return false;
-  return cell.trim() === '';
+  return isNullSentinel(cell);
 }
 
 function firstText(row: Cell[]): string {
@@ -35,6 +39,16 @@ export const TOTAL_RE = /^(?:grand\s+total|sub\s*total|totals?\b|summary\b|overa
 /** Exporter metadata: "Export Date:", "Export generated:", "Created at". */
 export const META_RE =
   /^(?:export\b|generated\b|report\s+(?:date|generated|created)\b|created\s+(?:at|on)\b|last\s+(?:updated|modified)\b|timestamp\b)/i;
+/**
+ * R11 – footer/marker lines. A lone cell in a dense table, a closing marker
+ * ("END", "--- END ---", "# EOF #"), or a sign-off line ("Prepared by:",
+ * "Notice:", "Generated on") is never data.
+ */
+export const FOOTER_RE =
+  /^(?:#+\s*)?(?:prepared\s+by|notice\b|generated\s+on\b|disclaimer\b|signed\s+by\b|signature\b|end\s+of\s+file|eof\b)(?:\s*[:.\-|.#]*)/i;
+/** A pure end-of-data marker cell: "END", "# END #", "end of records". */
+export const END_RE =
+  /^(?:#+\s*)?end(?:\s*(?:of\s+)?(?:file|data|record(?:s)?|report|document|table|input))?(?:\s*[-:.|#]*\s*)$/i;
 
 /** Most common row width – robust against one stray long/short line. */
 export function modalWidth(rows: Cell[][]): number {
@@ -74,12 +88,50 @@ export interface RejectResult {
 }
 
 /**
+ * R11 – is this row a footer/marker fragment rather than data?
+ *
+ * The "one lone cell" rule only fires in a file that is otherwise dense
+ * (`modalFilled >= 2`): a genuinely sparse file (a contact card, a key/value
+ * list) is data, not footers.
+ */
+function isFooterRow(padded: Cell[], width: number, filled: number, modalFilled: number): boolean {
+  if (width < 2) return false; // single-column tables are prose, not rows
+  const head = firstText(padded);
+  if (head === '') return false;
+  if (END_RE.test(head)) return true;
+  if (FOOTER_RE.test(head)) return true;
+  // "only the first cell is filled" – one lone cell in a multi-column table.
+  return filled === 1 && modalFilled >= 2;
+}
+
+/** Most common number of filled cells per row (density of the file). */
+function modalFilledCount(rows: Cell[][], width: number): number {
+  const counts = new Map<number, number>();
+  for (const row of rows) {
+    const filled = filledCount(padTo(row, width));
+    counts.set(filled, (counts.get(filled) ?? 0) + 1);
+  }
+  let best = 0;
+  let bestCount = -1;
+  for (const [filled, times] of counts) {
+    if (times > bestCount || (times === bestCount && filled > best)) {
+      best = filled;
+      bestCount = times;
+    }
+  }
+  return best;
+}
+
+/**
  * Classify every row and locate the header.
  *
  * In `auto` mode the file's leading banners are consumed first: a sparse row
  * is a banner when a dense, header-shaped row follows it. That is what lets
  * the real header ("Visit_ID | Patient_Details | …") be found underneath a
  * title and an export-date line instead of the title being mistaken for it.
+ *
+ * R11 – everything after an END marker is footer and is rejected before any
+ * other rule sees it.
  */
 export function rejectRows(raw: Cell[][], mode: HeaderMode, columnsKnown: boolean): RejectResult {
   const width = modalWidth(raw);
@@ -87,6 +139,18 @@ export function rejectRows(raw: Cell[][], mode: HeaderMode, columnsKnown: boolea
   // fill most cells even when a couple of values are missing; banners fill one
   // or two. Requiring sparseness keeps every text rule off real data rows.
   const sparseAt = Math.max(1, Math.floor(width / 3));
+  const modalFilled = modalFilledCount(raw, width);
+
+  // R11 pre-scan: locate the first END marker; everything after it is footer.
+  let endIndex = -1;
+  if (width >= 2) {
+    for (let index = 0; index < raw.length; index += 1) {
+      if (END_RE.test(firstText(padTo(raw[index], width)))) {
+        endIndex = index;
+        break;
+      }
+    }
+  }
 
   const kept: Cell[][] = [];
   const rejected: RejectedRow[] = [];
@@ -94,6 +158,14 @@ export function rejectRows(raw: Cell[][], mode: HeaderMode, columnsKnown: boolea
 
   const classify = (index: number): 'rejected' | 'kept' => {
     const padded = padTo(raw[index], width);
+    if (endIndex >= 0 && index > endIndex) {
+      rejected.push({ reason: 'footer line (after END marker)', values: padded });
+      return 'rejected';
+    }
+    if (endIndex === index) {
+      rejected.push({ reason: 'footer/marker line', values: padded });
+      return 'rejected';
+    }
     const filled = filledCount(padded);
     if (filled === 0) {
       rejected.push({ reason: 'blank row', values: padded });
@@ -113,6 +185,14 @@ export function rejectRows(raw: Cell[][], mode: HeaderMode, columnsKnown: boolea
         rejected.push({ reason: 'export metadata line', values: padded });
         return 'rejected';
       }
+      if (isFooterRow(padded, width, filled, modalFilled)) {
+        rejected.push({ reason: 'footer/marker line', values: padded });
+        return 'rejected';
+      }
+    } else if (isFooterRow(padded, width, filled, modalFilled)) {
+      // dense row whose first cell is a pure marker (END / EOF)
+      rejected.push({ reason: 'footer/marker line', values: padded });
+      return 'rejected';
     }
     kept.push(padded);
     return 'kept';
@@ -164,6 +244,7 @@ export function rejectRows(raw: Cell[][], mode: HeaderMode, columnsKnown: boolea
     else if (TOTAL_RE.test(head)) rejected.push({ reason: 'summary/total line', values: padded });
     else if (META_RE.test(head)) rejected.push({ reason: 'export metadata line', values: padded });
     else if (hasHeaderAfter(index)) rejected.push({ reason: 'title line', values: padded });
+    else if (isFooterRow(padded, width, filled, modalFilled)) rejected.push({ reason: 'footer/marker line', values: padded });
     else break;
     index += 1;
   }
@@ -195,6 +276,29 @@ export function rejectReasons(rejected: RejectedRow[]): { reason: string; count:
     }
   }
   return order.map((reason) => ({ reason, count: counts.get(reason) ?? 0 }));
+}
+
+/**
+ * R15 – row-count control line: "Total rows: 999", "50 records", "120
+ * entries counted". Found among the rejected junk lines and compared with the
+ * number of clean rows by the report.
+ */
+export function findRowControl(rejected: RejectedRow[]): { reported: number; source: string } | null {
+  const COUNT_AFTER = /\b(?:rows?|records?|entries|lines?|items?)\b\s*(?:count(?:ed)?|total)?\s*[:=]\s*([\d,]+)/i;
+  const COUNT_BEFORE = /\b([\d,]+)\s*(?:rows?|records?|entries|lines?|items?)\b/i;
+  for (const row of rejected) {
+    if (row.reason === 'blank row' || row.reason === 'error row') continue;
+    const text = row.values
+      .filter((cell) => cell !== null && cell !== undefined)
+      .map((cell) => String(cell))
+      .join(' ');
+    const match = COUNT_AFTER.exec(text) ?? COUNT_BEFORE.exec(text);
+    if (!match) continue;
+    const reported = Number(match[1].replace(/,/g, ''));
+    if (!Number.isFinite(reported)) continue;
+    return { reported, source: text.trim() };
+  }
+  return null;
 }
 
 /**

@@ -1,5 +1,5 @@
-import type { Cell, Reconciliation, ValueMapping } from '../types';
-import { cleanText, isNullSentinel } from '../lib/strings';
+import type { Cell, OverlapEntry, Reconciliation, ValueMapping } from '../types';
+import { categoryKey, cleanText, isNullSentinel } from '../lib/strings';
 import { parseNumberValue } from '../lib/numbers';
 
 /**
@@ -50,14 +50,69 @@ export function clearSystemCells(columns: string[], rows: Cell[][], systemRows: 
 
 // ------------------------------------------------------------------ R4 ----
 
+// ------------------------------------------------------------------ R13 ----
+
+const NUMBER_WORDS: Record<string, number> = {
+  zero: 0, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7,
+  eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13,
+  fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18,
+  nineteen: 19, twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60,
+  seventy: 70, eighty: 80, ninety: 90,
+};
+
+/**
+ * R13 – a value written out in words ("Twelve", "twenty five", "FORTY").
+ * Only a value that is *nothing but* number words parses, so prose such as
+ * "one more thing" never becomes a number. Returns null otherwise.
+ */
+export function spelledToNumber(value: string): number | null {
+  const words = value
+    .trim()
+    .toLowerCase()
+    .replace(/[-\u2013\u2014]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .split(' ')
+    .filter((word) => word !== '' && word !== 'and');
+  if (words.length === 0 || words.length > 6) return null;
+
+  let total = 0;
+  let current = 0;
+  let matched = false;
+  for (const word of words) {
+    if (word in NUMBER_WORDS) {
+      const value = NUMBER_WORDS[word];
+      // "twenty five" adds; "one two" would too – words are read as a sum of
+      // tens/units, which is unambiguous for the forms R13 promises.
+      current += value;
+      matched = true;
+    } else if (word === 'hundred') {
+      if (current === 0) return null;
+      current *= 100;
+      matched = true;
+    } else if (word === 'thousand') {
+      if (current === 0) return null;
+      total += current * 1000;
+      current = 0;
+      matched = true;
+    } else {
+      return null;
+    }
+  }
+  return matched ? total + current : null;
+}
+
 /**
  * A leading "+" means phone/reference-like text (R4 keeps it as text), so it
  * never counts towards numericity – otherwise "+1 415 555 0101" would drag a
- * phone column into the number conversion.
+ * phone column into the number conversion. Spelled-out numbers count as
+ * numeric (R13) so a column written in words is still recognised as a number
+ * column and converted.
  */
 function numericString(value: string): number | null {
   if (value.trimStart().startsWith('+')) return null;
-  return parseNumberValue(value);
+  const parsed = parseNumberValue(value);
+  if (parsed !== null) return parsed;
+  return spelledToNumber(value);
 }
 
 /** A numeric column: at least 80% of its present values parse as numbers. */
@@ -79,6 +134,8 @@ export interface NumericConversion {
   moved: number;
   /** Values rewritten as a number (currency, grouping, percent). */
   converted: number;
+  /** Subset of `converted` that was spelled out in words (R13). */
+  spelled: number;
 }
 
 /**
@@ -91,6 +148,7 @@ export function convertNumeric(values: Cell[]): NumericConversion {
   const notes: Cell[] = [];
   let moved = 0;
   let converted = 0;
+  let spelled = 0;
 
   for (const value of values) {
     if (value === null || value === undefined) {
@@ -109,11 +167,18 @@ export function convertNumeric(values: Cell[]): NumericConversion {
       notes.push(null);
       continue;
     }
-    const parsed = numericString(text);
+    // R13 first: spelled-out numbers become digits, then the normal parse.
+    const word = parseNumberValue(text) === null ? spelledToNumber(text) : null;
+    const parsed = word ?? parseNumberValue(text);
     if (parsed !== null) {
       out.push(parsed);
       notes.push(null);
-      if (!/^-?\d+(?:\.\d+)?$/.test(text.replace(/,/g, ''))) converted += 1;
+      if (word !== null) {
+        spelled += 1;
+        converted += 1;
+      } else if (!/^-?\d+(?:\.\d+)?$/.test(text.replace(/,/g, ''))) {
+        converted += 1;
+      }
       continue;
     }
     out.push(null);
@@ -121,7 +186,7 @@ export function convertNumeric(values: Cell[]): NumericConversion {
     moved += 1;
   }
 
-  return { values: out, notes, moved, converted };
+  return { values: out, notes, moved, converted, spelled };
 }
 
 // ------------------------------------------------------------------ R6 ----
@@ -177,9 +242,23 @@ export interface CategoryConversion {
 }
 
 /**
- * R6: group values that differ only by case/spacing, keep the most frequent
- * form as canonical, then reshape by role – UPPER_SNAKE_CASE for status-like
- * columns, Title Case for city/department/label columns, as-is elsewhere.
+ * A "category" column, decided from content: few enough distinct folded
+ * values that clustering them is meaningful. The invariant suite uses the
+ * exact same predicate, so anything this considers a category comes out free
+ * of case/space/punctuation collisions.
+ */
+export function isCategoryColumn(values: Cell[]): boolean {
+  const strings = values.filter((value): value is string => typeof value === 'string' && value.trim() !== '');
+  if (strings.length === 0) return false;
+  const keys = new Set(strings.map(categoryKey));
+  return keys.size <= Math.max(3, Math.floor(values.length * 0.5));
+}
+
+/**
+ * R6: group values that differ only by case/spacing/punctuation, keep the most
+ * frequent form as canonical, then reshape by role – UPPER_SNAKE_CASE for
+ * status-like columns, Title Case for city/department/label columns, as-is
+ * elsewhere.
  */
 export function normalizeCategories(
   name: string,
@@ -190,12 +269,12 @@ export function normalizeCategories(
   const out = values.map((value) => (typeof value === 'string' ? collapse(value) : value));
   if (strings.length === 0) return { values: out, mappings: [], conversions: 0 };
 
-  // Only true categories: few distinct values relative to the row count.
+  // Only true categories: few distinct folded keys relative to the row count.
   const groups = new Map<string, Map<string, number>>();
   const order: string[] = [];
   for (const text of strings) {
     const form = collapse(text);
-    const key = form.toLowerCase();
+    const key = categoryKey(form);
     const bucket = groups.get(key);
     if (bucket) bucket.set(form, (bucket.get(form) ?? 0) + 1);
     else {
@@ -227,7 +306,7 @@ export function normalizeCategories(
 
   const mapped = (raw: string): string => {
     const form = collapse(raw);
-    const key = form.toLowerCase();
+    const key = categoryKey(form);
     const base = canonical.get(key) ?? form;
     let next = base;
     if (role === 'status') next = upperSnake(base);
@@ -451,4 +530,96 @@ export function reconcile(
 /** Null-count per column, used by the quality report. */
 export function nullCount(values: Cell[]): number {
   return values.reduce<number>((total, value) => (isNullSentinel(value) ? total + 1 : total), 0);
+}
+
+// ------------------------------------------------------------------ R17 ----
+
+/** Item separators: "Aspirin; Paracetamol", "A + B", "tea / coffee". */
+const ITEM_SPLIT_RE = /\s*[;|]\s*|\s+\+\s+|\s+\/\s+/;
+
+export interface ItemPlan {
+  /** Item count per row (null for empty cells). */
+  counts: Cell[];
+  /** true when the column is a multi-item column and gets `<col>_item_count`. */
+  active: boolean;
+  multiCells: number;
+}
+
+/** Split one cell into its items ("A; B" → [A, B]); single values stay alone. */
+export function splitItems(value: string): string[] {
+  const parts = value
+    .split(ITEM_SPLIT_RE)
+    .map((part) => part.trim())
+    .filter((part) => part !== '');
+  return parts.length > 0 ? parts : [value];
+}
+
+/**
+ * R17 – a "multi-item" column: at least 30% of its non-empty cells hold two
+ * or more items joined by ";", " + " or " / ". The cell keeps its text; a
+ * companion `<col>_item_count` column records how many items each cell holds.
+ * Nothing is ever exploded in place (the Explode toggle builds a second sheet).
+ */
+export function planItems(values: Cell[]): ItemPlan {
+  const counts: Cell[] = [];
+  let nonBlank = 0;
+  let multi = 0;
+  for (const value of values) {
+    if (value === null || value === undefined || typeof value !== 'string' || value.trim() === '') {
+      counts.push(null);
+      continue;
+    }
+    nonBlank += 1;
+    const parts = value
+      .split(ITEM_SPLIT_RE)
+      .map((part) => part.trim())
+      .filter((part) => part !== '');
+    const count = Math.max(1, parts.length);
+    counts.push(count);
+    if (parts.length >= 2) multi += 1;
+  }
+  const active = nonBlank >= 4 && multi / nonBlank >= 0.3;
+  return { counts, active, multiCells: multi };
+}
+
+// ------------------------------------------------------------------ R18 ----
+
+/**
+ * Ways two values of one column can be written as a combination.
+ * `_` matters because R6 runs before R18: a status-role column is reshaped to
+ * UPPER_SNAKE_CASE, so "Returned / Delivered" arrives here as
+ * "RETURNED_DELIVERED" with the separator already gone. Splitting on `_` is
+ * safe – the containment check below rejects word-internal underscores such as
+ * "IN_TRANSIT" unless "IN" and "TRANSIT" are also values of the column.
+ */
+const OVERLAP_SEPS = ['/', '+', '&', ',', '_'];
+
+/**
+ * R18 – overlapping categories: "Cash" and "UPI" exist on their own *and*
+ * as "Cash / UPI". The combination is listed for review and never merged with
+ * (or split into) its parts – only the human can say which one was meant.
+ */
+export function findOverlaps(column: string, values: Cell[]): OverlapEntry[] {
+  const present = new Set<string>();
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim() !== '') present.add(collapse(value));
+  }
+  if (present.size < 3) return [];
+  const keys = new Set([...present].map(categoryKey));
+
+  const entries: OverlapEntry[] = [];
+  for (const value of present) {
+    if (!OVERLAP_SEPS.some((sep) => value.includes(sep))) continue;
+    const parts = value
+      .split(new RegExp(`(?:${OVERLAP_SEPS.map((sep) => sep.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`))
+      .map((part) => part.trim())
+      .filter((part) => part !== '');
+    if (parts.length < 2) continue;
+    const partKeys = parts.map(categoryKey);
+    if (new Set(partKeys).size < 2) continue;
+    if (partKeys.some((key) => !keys.has(key))) continue;
+    if (partKeys.includes(categoryKey(value))) continue;
+    entries.push({ column, value, parts });
+  }
+  return entries;
 }

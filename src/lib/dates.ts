@@ -111,7 +111,12 @@ export function parseDateValue(value: Cell): string | null {
 }
 
 export function looksLikeDate(value: string): boolean {
-  return parseDateValue(value) !== null;
+  const text = value.trim();
+  if (text === '') return false;
+  // Any recognised shape counts – resolveDates owns the actual conversion and
+  // keeps what it cannot prove (principle 2) instead of nulling it.
+  if (datePatternKey(text) !== null) return true;
+  return parseDateValue(text) !== null;
 }
 
 // ------------------------------------------------------------------ R3 ----
@@ -123,6 +128,13 @@ export function looksLikeDate(value: string): boolean {
 
 /** DM = day first (DD-MM), MD = month first (MM-DD). */
 export type DayMonthOrder = 'DM' | 'MD';
+/**
+ * What to do with date patterns the file never proves:
+ * 'auto' (default) keeps the original value and files a low-confidence item in
+ * "Needs review"; 'DM' / 'MD' are an explicit user choice (the toggle) that
+ * applies that order and says so.
+ */
+export type DateOrderMode = DayMonthOrder | 'auto';
 
 /** 2025-06-01 · 2025/06/01 · 2025.06.01 – year first, never ambiguous. */
 const YEAR_FIRST_RE = /^(\d{4})([-/.])(\d{1,2})\2(\d{1,2})$/;
@@ -195,9 +207,13 @@ export interface DateResolution {
 
 /**
  * Parse a column of dates with the proven per-pattern order.
- * `fallback` is the UI toggle (default DD-MM) used only for unproven patterns.
+ *
+ * Unproven patterns are the honesty boundary (principle 2): in 'auto' mode
+ * the original value is KEPT and the index is reported as ambiguous so the UI
+ * can offer the default reading as a suggestion; an explicit `mode` (the
+ * toggle, or an accepted review item) applies that order instead.
  */
-export function resolveDates(values: Cell[], fallback: DayMonthOrder = 'DM'): DateResolution {
+export function resolveDates(values: Cell[], mode: DateOrderMode = 'auto'): DateResolution {
   const texts = values
     .map((value) => (typeof value === 'string' ? value.trim() : ''))
     .filter((text) => text !== '');
@@ -214,15 +230,42 @@ export function resolveDates(values: Cell[], fallback: DayMonthOrder = 'DM'): Da
     }
     const text = cell.trim();
     const key = datePatternKey(text);
-    let order: DayMonthOrder | null = null;
-    if (key !== null && !key.startsWith('year-first') && key !== 'named') {
-      const proven = orders.get(key);
-      order = proven === undefined ? null : proven;
-      if (order === null) ambiguousIndices.push(index);
+    const needsProof = key !== null && !key.startsWith('year-first') && key !== 'named';
+
+    if (needsProof) {
+      const proven = orders.get(key) ?? null;
+      if (proven === null) {
+        // Pattern never proved – flag it, then honour the user's mode.
+        ambiguousIndices.push(index);
+        if (mode === 'auto') {
+          out.push(text); // original kept, suggestion filed in Needs review
+          return;
+        }
+        const iso = parseDateWithOrder(text, mode);
+        out.push(iso ?? text);
+        if (iso !== null) converted += 1;
+        return;
+      }
+      const iso = parseDateWithOrder(text, proven);
+      if (iso === null) {
+        // Proven order but the date itself is impossible (31-02) – keep it.
+        ambiguousIndices.push(index);
+        out.push(text);
+        return;
+      }
+      out.push(iso);
+      converted += 1;
+      return;
     }
-    const iso = parseDateWithOrder(text, order ?? fallback);
+
+    // Named / year-first / datetime shapes have no day/month ambiguity.
+    const iso = parseDateWithOrder(text, 'DM');
+    if (iso === null) {
+      out.push(text); // not a date – keep it, the column demotes to text
+      return;
+    }
     out.push(iso);
-    if (iso !== null) converted += 1;
+    converted += 1;
   });
 
   return { values: out, ambiguousIndices, converted };

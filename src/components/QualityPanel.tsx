@@ -22,7 +22,7 @@ export default function QualityPanel({ dataset, onDownloaded }: QualityPanelProp
     {
       label: 'Rejected rows',
       value: report.rejectedCount.toLocaleString(),
-      hint: 'title, export-date, error, alert, summary/total and system lines moved aside with a reason (R1)',
+      hint: 'title, export-date, error, alert, summary/total, footer/marker and system lines moved aside with a reason (R1/R11)',
     },
     { label: 'Duplicates removed', value: report.duplicatesRemoved.toLocaleString(), hint: 'exact duplicate rows after ID cleaning (R8)' },
     { label: 'Columns', value: `${report.columnsIn} → ${report.columnsOut}` },
@@ -36,8 +36,26 @@ export default function QualityPanel({ dataset, onDownloaded }: QualityPanelProp
       value: report.nullsFixed.toLocaleString(),
       hint: 'sentinel values ("N/A", "-", "null"…) converted to real nulls',
     },
-    { label: 'Values filled', value: report.valuesFilled.toLocaleString(), hint: 'text gaps filled with the column mode' },
-    { label: 'Outliers flagged', value: report.outliersFlagged.toLocaleString(), hint: 'IQR flags – never removed' },
+    {
+      label: 'Values filled',
+      value: report.valuesFilled.toLocaleString(),
+      hint: 'text gaps filled with the column mode — only after you accept the suggestion (low confidence)',
+    },
+    {
+      label: 'Outliers flagged',
+      value: report.outliersFlagged.toLocaleString(),
+      hint: 'IQR flags – never removed',
+    },
+    {
+      label: 'Needs review',
+      value: report.reviewItems.filter((item) => !item.applied).length.toLocaleString(),
+      hint: 'low-confidence changes kept as original – accept or reject them in the Needs review tab (principle 2)',
+    },
+    {
+      label: 'Spelled numbers',
+      value: report.spelledNumbers.toLocaleString(),
+      hint: 'values written in words converted to digits (R13)',
+    },
   ];
 
   return (
@@ -99,6 +117,35 @@ export default function QualityPanel({ dataset, onDownloaded }: QualityPanelProp
           ) : (
             <span> — the file declares no total line.</span>
           )}
+        </div>
+      )}
+
+      {/* R15 – "Total rows: N" control line vs the clean rows */}
+      {report.rowControl && (
+        <div
+          className={`rounded-xl border px-3 py-2 text-xs ${
+            report.rowControl.matches
+              ? 'border-[var(--u2s-border)] muted'
+              : 'border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-200'
+          }`}
+          role="status"
+        >
+          <span className="font-semibold">Row control (R15):</span> the file declares{' '}
+          <span className="mono-num">{report.rowControl.reported.toLocaleString()}</span> row(s), the clean table has{' '}
+          <span className="mono-num">{report.rowControl.actual.toLocaleString()}</span> →{' '}
+          <span className="font-semibold">{report.rowControl.matches ? 'matches' : 'does not match'}</span>
+        </div>
+      )}
+
+      {/* Rules that actually did something for this file */}
+      {report.rulesFired.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span className="muted font-semibold">Rules fired:</span>
+          {report.rulesFired.map((rule) => (
+            <span key={rule} className="badge badge-text" title={`rule ${rule} changed this file`}>
+              {rule}
+            </span>
+          ))}
         </div>
       )}
 

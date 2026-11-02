@@ -178,3 +178,87 @@ export function normalizeIdColumn(values: Cell[]): IdColumnResult {
 
   return { core, raw, tag, hasTags, normalised };
 }
+
+// ------------------------------------------------------------ R14 ----
+
+/**
+ * R14 – a column that is clearly an identifier but has gaps.
+ *
+ * Decided from content only: among the present values most must be one dense
+ * digit run (bare "70001" or decorated "#70001"), they must be nearly unique
+ * (identifiers repeat, measurements repeat far more often), and at least 5%
+ * of the rows must be missing an id. A money column with a few blanks never
+ * qualifies: decimals and repeated totals break the shape/uniqueness checks,
+ * so a real gap in an id-shaped column is surfaced even when it is small –
+ * losing 1 in 20 ids is an ambiguity the analyst must see (R14).
+ */
+export function isMissingIdColumn(values: Cell[]): boolean {
+  const total = values.length;
+  if (total < 8) return false;
+
+  let missing = 0;
+  const present: string[] = [];
+  for (const value of values) {
+    if (value === null || value === undefined || (typeof value === 'string' && value.trim() === '')) {
+      missing += 1;
+      continue;
+    }
+    present.push(String(value).trim());
+  }
+  if (present.length < 4) return false;
+  if (missing / total < 0.05) return false;
+
+  let shaped = 0;
+  const cores = new Set<string>();
+  for (const text of present) {
+    if (/^\d{3,}$/.test(text)) {
+      shaped += 1;
+      cores.add(text);
+      continue;
+    }
+    const runs = [...text.matchAll(/\d+/g)];
+    if (runs.length === 0) continue;
+    let best = runs[0];
+    for (const run of runs) if (run[0].length > best[0].length) best = run;
+    const start = best.index ?? 0;
+    const prefix = text.slice(0, start);
+    const suffix = text.slice(start + best[0].length);
+    const decoration = `${prefix}${suffix}`;
+    const density = best[0].length / text.length;
+    if (best[0].length >= 3 && !/\d/.test(decoration) && density >= 0.6) {
+      shaped += 1;
+      cores.add(best[0]);
+    }
+  }
+  if (shaped / present.length < 0.8) return false;
+  // Ids are (nearly) unique; a measure column repeats values far more.
+  if (cores.size / present.length < 0.9) return false;
+  return true;
+}
+
+export interface MissingIdPlan {
+  /** For each row: a generated id when the row had none, else null. */
+  generated: Cell[];
+  /** For each row: true when the row had no id. */
+  missing: boolean[];
+  count: number;
+}
+
+/** Build the generated_id / missing_id columns (never merge, never drop). */
+export function planMissingIds(values: Cell[]): MissingIdPlan {
+  const generated: Cell[] = [];
+  const missing: boolean[] = [];
+  let count = 0;
+  for (const value of values) {
+    const absent = value === null || value === undefined || (typeof value === 'string' && value.trim() === '');
+    if (absent) {
+      count += 1;
+      generated.push(`gen-${count}`);
+      missing.push(true);
+    } else {
+      generated.push(null);
+      missing.push(false);
+    }
+  }
+  return { generated, missing, count };
+}

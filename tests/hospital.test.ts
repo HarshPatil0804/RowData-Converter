@@ -61,7 +61,9 @@ describe('R1 junk rows', () => {
     // Every rejection carries a reason — nothing is dropped silently.
     for (const row of rejected) expect(row.reason.length).toBeGreaterThan(0);
     expect(ds.report.rejectedCount).toBe(rejected.length);
-    expect(ds.report.rejectedCount).toBe(7);
+    // 7 junk lines + the blank line 3 of the fixture: blank rows are rejected
+    // with a reason now, never deleted at parse time.
+    expect(ds.report.rejectedCount).toBe(8);
 
     const reasons = ds.report.rejectedReasons.map((r) => r.reason);
     expect(reasons).toContain('title line');
@@ -282,9 +284,9 @@ describe('R10 reconciliation', () => {
     const table = qualityToTable(ds.report);
     const cell = (section: string, key: string): Cell | undefined =>
       table.rows.find((row) => row[0] === section && row[1] === key)?.[2];
-    expect(cell('summary', 'rows_in')).toBe(1008);
+    expect(cell('summary', 'rows_in')).toBe(1009);
     expect(cell('summary', 'rows_out')).toBe(999);
-    expect(cell('summary', 'rejected_rows')).toBe(7);
+    expect(cell('summary', 'rejected_rows')).toBe(8);
     expect(cell('summary', 'ambiguous_dates')).toBe(0);
     expect(cell('reconciliation', 'parsed')).toBe(4668696.06);
     expect(cell('reconciliation', 'reported')).toBe(4287650);
@@ -496,7 +498,7 @@ describe('P7/P8 export', () => {
       'Value mappings',
     ]);
     expect(sheets[0].rows.length).toBe(999);
-    expect(sheets[1].rows.length).toBe(7);
+    expect(sheets[1].rows.length).toBe(8);
     expect(sheets[3].rows.length).toBeGreaterThan(0);
   });
 });

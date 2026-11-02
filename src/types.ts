@@ -48,6 +48,46 @@ export interface RejectedRow {
   values: Cell[];
 }
 
+/**
+ * A low-confidence decision (principle 2): the original value is kept, the
+ * change is flagged, and "Needs review" offers the suggested fix with
+ * Accept/Reject. Accepting re-runs the pipeline with the suggestion applied.
+ */
+export interface ReviewItem {
+  /** Stable id, e.g. "date_order:visit_date:numeric-/-4" or "value_fill:city". */
+  id: string;
+  kind: 'date_order' | 'value_fill' | 'missing_id' | 'overlap' | 'packed_split';
+  /** Column the decision belongs to. */
+  column: string;
+  /** Row the decision belongs to (null = whole column). */
+  rowIndex: number | null;
+  /** The original value ("" when the cell was empty). */
+  original: string;
+  /** The fix the pipeline suggests but has not applied (unless `applied`). */
+  suggested: string;
+  /** 0…1 – below 0.8 the item is shown for review. */
+  confidence: number;
+  reason: string;
+  /** true when the suggestion was already applied to the data. */
+  applied: boolean;
+}
+
+/** R15 – a "Total rows/records: N" control line compared with the clean rows. */
+export interface RowControl {
+  reported: number;
+  actual: number;
+  matches: boolean;
+  source: string;
+}
+
+/** R18 – a value that overlaps other values of the same column. */
+export interface OverlapEntry {
+  column: string;
+  value: string;
+  /** The standalone values contained in `value`. */
+  parts: string[];
+}
+
 /** R6 – one before → after value normalisation, kept for the report. */
 export interface ValueMapping {
   column: string;
@@ -118,8 +158,18 @@ export interface FileReport {
   mappings: ValueMapping[];
   /** R10 – parsed vs reported total. */
   reconciliation: Reconciliation | null;
+  /** R15 – row-count control line vs the number of clean rows. */
+  rowControl: RowControl | null;
   /** Date found in the file's export/generated metadata line. */
   exportDate: string | null;
+  /** Pipeline rules that actually did something for this file. */
+  rulesFired: string[];
+  /** Every automatic change with a confidence score (principle 2). */
+  reviewItems: ReviewItem[];
+  /** R13 – spelled-out numbers rewritten as digits. */
+  spelledNumbers: number;
+  /** R18 – values that contain other values of the same column. */
+  overlapping: OverlapEntry[];
   notes: string[];
 }
 
@@ -138,6 +188,8 @@ export interface Dataset {
   rejected: RejectedRow[];
   /** Names of the flag columns present (R7 system flag + R9 logic flags). */
   flagColumns: string[];
+  /** Low-confidence decisions waiting in the "Needs review" tab. */
+  review: ReviewItem[];
   report: QualityReport;
 }
 

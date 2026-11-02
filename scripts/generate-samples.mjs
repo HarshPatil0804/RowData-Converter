@@ -10,7 +10,7 @@ import JSZip from 'jszip';
 import XLSX from 'xlsx';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const samples = path.join(root, 'samples');
+const samples = path.join(root, 'samples', 'dev');
 fs.mkdirSync(samples, { recursive: true });
 fs.mkdirSync(path.join(samples, '.large'), { recursive: true });
 
@@ -609,5 +609,5 @@ if (process.argv.includes('--large')) {
   written.push('.large/large_50mb.csv');
 }
 
-console.log(`Generated ${written.length} sample files in samples/:`);
+console.log(`Generated ${written.length} sample files in samples/dev/:`);
 for (const name of written) console.log(`  - ${name}`);

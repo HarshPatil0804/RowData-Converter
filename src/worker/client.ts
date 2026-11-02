@@ -1,12 +1,14 @@
-import type { DayMonthOrder } from '../lib/dates';
+import type { DateOrderMode } from '../lib/dates';
 import type { Dataset, ProgressUpdate } from '../types';
 
 export interface ProcessJob {
   name: string;
   mime: string;
   buffer: ArrayBuffer;
-  /** R3 – day/month fallback for patterns the file never proves. */
-  dateOrder?: DayMonthOrder;
+  /** R3 – how to read patterns the file never proves ('auto' | DM | MD). */
+  dateOrder?: DateOrderMode;
+  /** Accepted review items – their suggestions are applied on this run. */
+  acceptReviews?: string[];
 }
 
 type WorkerResponse =

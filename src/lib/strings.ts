@@ -46,7 +46,42 @@ export function cleanText(input: string): string {
   s = s.replace(/[\u201C\u201D\u2033]/g, '"');
   s = s.replace(/[\u2013\u2014\u2212]/g, '-');
   s = s.replace(/\u00AD/g, '');
+  // R12 – decorative wrapping quotes are stripped FIRST, before any matching
+  // or clustering: '"5005"' and '5005' must reach the rules as the same value.
+  // Only a *matching pair around the whole value* goes; an apostrophe inside
+  // text ("don't") or an unbalanced quote is left alone.
+  s = stripWrappingQuotes(s);
   return s;
+}
+
+/** Strip one matching pair of straight/curly double or single quotes. */
+function stripWrappingQuotes(value: string): string {
+  if (value.length < 2) return value;
+  const pairs: [string, string][] = [
+    ['"', '"'],
+    ["'", "'"],
+    ['\u201C', '\u201D'],
+    ['\u201E', '"'],
+  ];
+  for (const [open, close] of pairs) {
+    if (value.startsWith(open) && value.endsWith(close) && value.length > open.length + close.length) {
+      return value.slice(open.length, value.length - close.length);
+    }
+  }
+  return value;
+}
+
+/**
+ * Identity used wherever two category values are compared (R6 clustering,
+ * invariant 4): case, spacing and punctuation are folded away, so "Paid",
+ * "PAID ", "paid." and "P-a-i-d" are one value while "Emergency" and
+ * "Emergency Care" stay apart.
+ */
+export function categoryKey(value: string): string {
+  return cleanText(value)
+    .toLowerCase()
+    .normalize('NFKC')
+    .replace(/[^\p{L}\p{N}]+/gu, '');
 }
 
 export function isNullSentinel(value: Cell): boolean {

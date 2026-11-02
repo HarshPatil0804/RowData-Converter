@@ -112,7 +112,48 @@ export interface PackedSplit {
   names: string[];
   /** Values for each new column, index-aligned with `rows`. */
   columns: Cell[][];
-  kind: 'kv' | 'pair';
+  kind: 'kv' | 'pair' | 'paren';
+}
+
+// ------------------------------------------------------------- R16 ----
+
+/** "Cardiology (cardiac)" → base + qualifier. No domain vocabulary. */
+const PAREN_CELL_RE = /^(.{1,120}?)\s*\(([^()]{1,80})\)\s*$/;
+
+function parenParts(value: string): [string, string] | null {
+  const match = PAREN_CELL_RE.exec(value);
+  if (!match) return null;
+  const base = match[1].trim();
+  const qualifier = match[2].trim();
+  if (base === '' || qualifier === '') return null;
+  // Both halves must carry words so version strings ("v1.2 (beta)" keeps
+  // digits but the qualifier at least looks like language) stay honest.
+  if (!/[A-Za-z]/.test(base) || !/[A-Za-z]/.test(qualifier)) return null;
+  return [base, qualifier];
+}
+
+/**
+ * R16 – parenthetical qualifiers: when 80%+ of a column's non-empty cells are
+ * "<text> (<qualifier>)", the qualifier moves to `<col>_qualifier` and the
+ * remainder stays in `<col>_base`.
+ */
+export function splitParensColumn(source: string, values: Cell[]): PackedSplit | null {
+  const texts = nonNull(values);
+  if (texts.length < 3) return null;
+  let matched = 0;
+  for (const text of texts) if (parenParts(text)) matched += 1;
+  if (matched / texts.length < MATCH_RATIO) return null;
+
+  const head = toSnakeCase(source) || 'value';
+  const base: Cell[] = [];
+  const qualifier: Cell[] = [];
+  for (const value of values) {
+    const text = typeof value === 'string' ? value.trim() : '';
+    const parts = text ? parenParts(text) : null;
+    base.push(parts ? parts[0] : text === '' ? null : text);
+    qualifier.push(parts ? parts[1] : null);
+  }
+  return { names: [`${head}_base`, `${head}_qualifier`], columns: [base, qualifier], kind: 'paren' };
 }
 
 /** Split every cell of one column. Returns null when the column is not packed. */
@@ -123,7 +164,9 @@ export function splitColumn(source: string, values: Cell[]): PackedSplit | null 
     for (const value of values) {
       const text = typeof value === 'string' ? value.trim() : '';
       const pairs = text ? kvPairs(text) : [];
-      const map = new Map(pairs);
+      // Keys are looked up by their snake_case form: detectKvNames returns
+      // snake names, while the cell carries the raw key ("Unit Price").
+      const map = new Map(pairs.map(([key, raw]) => [toSnakeCase(key), raw]));
       kvNames.forEach((name, index) => {
         // `<key>_name` stores the value of plain `key`.
         const rawKey = name.endsWith('_name') ? name.slice(0, -5) : name;
@@ -146,5 +189,5 @@ export function splitColumn(source: string, values: Cell[]): PackedSplit | null 
     return { names: pairNames, columns: [left, right], kind: 'pair' };
   }
 
-  return null;
+  return splitParensColumn(source, values);
 }

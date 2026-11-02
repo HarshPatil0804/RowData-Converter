@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import type { Dataset } from '../types';
 import type { ResultItem } from '../App';
-import type { DayMonthOrder } from '../lib/dates';
+import type { DateOrderMode } from '../lib/dates';
 import { datasetToSheets, downloadCSV, downloadJSON, downloadXLSX, downloadText, qualityToCSV } from '../lib/export';
 import { computePivot, suggestPivot } from '../lib/pivot';
 import { displayCell } from '../lib/strings';
@@ -18,10 +18,12 @@ export interface ChoiceScreenProps {
   onSelectFile: (index: number) => void;
   onDownloaded: () => void;
   onRestart: () => void;
-  /** R3 – current day/month fallback for unproven date patterns. */
-  dateOrder: DayMonthOrder;
+  /** R3 – 'auto' keeps unproven dates; 'DM'/'MD' is the explicit toggle. */
+  dateOrder: DateOrderMode;
   /** R3 – flipping it re-runs the pipeline on the loaded files. */
-  onDateOrderChange: (order: DayMonthOrder) => void;
+  onDateOrderChange: (order: DateOrderMode) => void;
+  /** Principle 2 – accepting a Needs-review suggestion re-runs with it applied. */
+  onAcceptReview: (id: string) => void;
 }
 
 function shortName(name: string): string {
@@ -38,8 +40,11 @@ export default function ChoiceScreen({
   onRestart,
   dateOrder,
   onDateOrderChange,
+  onAcceptReview,
 }: ChoiceScreenProps) {
   const [mode, setMode] = useState<Mode>('preview');
+  /** R17 – Explode multi-item rows into a second sheet. Default off. */
+  const [explode, setExplode] = useState(false);
   const active: Dataset = results[activeIndex]?.dataset ?? results[0].dataset;
   const report = active.report;
 
@@ -49,12 +54,19 @@ export default function ChoiceScreen({
     return { config, table: computePivot(active, config) };
   }, [active]);
 
+  const hasItemCounts = active.columns.some((column) => column.endsWith('_item_count'));
+
   const downloadTabular = (kind: 'csv' | 'xlsx' | 'json') => {
     if (kind === 'csv') downloadCSV(active.columns, active.rows, 'data.csv');
     else if (kind === 'json') downloadJSON(active.columns, active.rows, 'data.json');
-    else downloadXLSX(datasetToSheets(active), 'data.xlsx');
+    else downloadXLSX(datasetToSheets(active, { explode }), 'data.xlsx');
     onDownloaded();
   };
+
+  const cycleDateOrder = (): DateOrderMode =>
+    dateOrder === 'auto' ? 'DM' : dateOrder === 'DM' ? 'MD' : 'auto';
+  const dateOrderLabel =
+    dateOrder === 'auto' ? 'Dates: auto' : dateOrder === 'DM' ? 'Dates: DD-MM' : 'Dates: MM-DD';
 
   const downloadQuality = () => {
     downloadText(qualityToCSV(report), 'quality-report.csv', 'text/csv;charset=utf-8');
@@ -98,17 +110,18 @@ export default function ChoiceScreen({
           <div className="flex gap-2 flex-wrap items-center">
             <button
               className="btn btn-secondary"
-              onClick={() => onDateOrderChange(dateOrder === 'DM' ? 'MD' : 'DM')}
-              title="R3 – for date patterns the file never proves, ambiguous values are read with this order. Changing it re-runs the pipeline."
+              onClick={() => onDateOrderChange(cycleDateOrder())}
+              title="R3 – 'auto' keeps date patterns the file never proves as written and files a suggestion in Needs review; DD-MM / MM-DD applies that order and re-runs the pipeline."
             >
-              Dates: {dateOrder === 'DM' ? 'DD-MM' : 'MM-DD'}
+              {dateOrderLabel}
             </button>
             <button
               className={`btn ${mode === 'review' ? 'btn-primary' : 'btn-secondary'}`}
               onClick={() => setMode(mode === 'review' ? 'preview' : 'review')}
-              title="Rows flagged for review: ambiguous dates, future dates, id conflicts, logic flags"
+              title="Low-confidence suggestions with Accept/Reject, plus rows flagged for review"
             >
-              Needs review{active.flagColumns.length > 0 ? ` (${active.flagColumns.length} flags)` : ''}
+              Needs review
+              {active.review.length > 0 ? ` (${active.review.filter((item) => !item.applied).length})` : ''}
             </button>
             <button className="btn btn-secondary" onClick={downloadQuality}>
               Download quality report
@@ -194,6 +207,20 @@ export default function ChoiceScreen({
               <button className="btn btn-secondary" onClick={() => downloadTabular('json')}>
                 Download JSON
               </button>
+              {hasItemCounts && (
+                <label
+                  className="btn btn-ghost inline-flex cursor-pointer items-center gap-2"
+                  title="R17 – write one row per item on a second 'Exploded data' sheet. Off by default; the clean sheet never changes."
+                >
+                  <input
+                    type="checkbox"
+                    checked={explode}
+                    onChange={(event) => setExplode(event.target.checked)}
+                    className="h-4 w-4 accent-indigo-600"
+                  />
+                  Explode multi-item rows
+                </label>
+              )}
             </div>
             <button className="btn btn-ghost" onClick={() => setMode('preview')}>
               ← Back to preview
@@ -207,12 +234,14 @@ export default function ChoiceScreen({
       {mode === 'review' && (
         <div className="flex flex-col gap-3">
           <div className="flex items-center justify-between">
-            <span className="muted text-xs">Flagged rows only — the clean data itself is unchanged.</span>
+            <span className="muted text-xs">
+              Suggestions keep the original value until you accept them; flagged rows stay in the data either way.
+            </span>
             <button className="btn btn-ghost" onClick={() => setMode('preview')}>
               ← Back to preview
             </button>
           </div>
-          <NeedsReview dataset={active} />
+          <NeedsReview dataset={active} onAccept={onAcceptReview} />
         </div>
       )}
 

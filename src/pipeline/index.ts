@@ -1,5 +1,5 @@
 import type { Dataset, ProgressUpdate } from '../types';
-import type { DayMonthOrder } from '../lib/dates';
+import type { DateOrderMode } from '../lib/dates';
 import { detectSource, type SourceKind } from './detect';
 import { extractSource } from './extract/index';
 import { extractArchive } from './extract/archive';
@@ -11,10 +11,13 @@ export interface ProcessOptions {
   /** Nesting depth for archives inside archives. */
   depth?: number;
   /**
-   * R3 – day/month order for date patterns the file never proves (the UI
-   * toggle). Defaults to DD-MM; proven patterns ignore it.
+   * R3 – how to read date patterns the file never proves. 'auto' (default)
+   * keeps the original values and files review suggestions; 'DM'/'MD' is the
+   * explicit UI toggle and applies that order.
    */
-  dateOrder?: DayMonthOrder;
+  dateOrder?: DateOrderMode;
+  /** Review items the user accepted – their suggestion is applied on re-run. */
+  acceptReviews?: readonly string[];
 }
 
 const MAX_ARCHIVE_DEPTH = 2;
@@ -76,6 +79,7 @@ export async function processBytes(
         const inner = await processBytes(entry.name, mimeFor(entry.name), entry.bytes, {
           depth: depth + 1,
           dateOrder: options.dateOrder,
+          acceptReviews: options.acceptReviews,
           onProgress: (update) =>
             emit({
               pct: base + (update.pct / 100) * (75 / entries.length),
@@ -111,7 +115,10 @@ export async function processBytes(
   const raw = structureExtraction(extraction);
 
   emit({ pct: 62, stage: 'clean', message: 'Cleaning and typing values' });
-  const dataset = cleanTable(raw, name, detection.kind as SourceKind, { dateOrder: options.dateOrder });
+  const dataset = cleanTable(raw, name, detection.kind as SourceKind, {
+    dateOrder: options.dateOrder,
+    acceptReviews: options.acceptReviews,
+  });
 
   emit({ pct: 94, stage: 'report', message: 'Compiling quality report' });
   const result = [dataset];

@@ -1,6 +1,7 @@
 import * as XLSX from 'xlsx';
 import type { Cell, Dataset, QualityReport, RejectedRow } from '../types';
 import { displayCell } from './strings';
+import { splitItems } from '../pipeline/rules';
 import type { PivotTable } from './pivot';
 
 /** RFC-4180 CSV with BOM (so Excel opens UTF-8 correctly). */
@@ -165,6 +166,27 @@ export function qualityToTable(report: QualityReport): { columns: string[]; rows
     push('reconciliation', 'matches', matches === null ? 'unverifiable' : matches ? 'yes' : 'no');
   }
 
+  if (report.rowControl) {
+    push('row_control', 'reported', report.rowControl.reported);
+    push('row_control', 'actual', report.rowControl.actual);
+    push('row_control', 'matches', report.rowControl.matches ? 'yes' : 'no');
+    push('row_control', 'source', report.rowControl.source);
+  }
+
+  push('summary', 'spelled_numbers', report.spelledNumbers);
+  push('summary', 'review_items', report.reviewItems.length);
+  push('summary', 'low_confidence', report.reviewItems.filter((item) => item.confidence < 0.8).length);
+
+  for (const rule of report.rulesFired) push('rule', rule, 'fired');
+
+  for (const item of report.reviewItems) {
+    push('review', item.id, `${item.applied ? 'applied' : 'pending'} · conf ${item.confidence} · ${item.original || '(empty)'} → ${item.suggested}`);
+  }
+
+  for (const entry of report.overlapping) {
+    push('overlap', entry.column, `${entry.value} = ${entry.parts.join(' + ')}`);
+  }
+
   if (report.files.length > 1) {
     for (const file of report.files) {
       const key = (suffix: string): string => `${file.fileName}.${suffix}`;
@@ -181,10 +203,50 @@ export function qualityToTable(report: QualityReport): { columns: string[]; rows
 }
 
 /**
- * Tabular workbook – P8 multi-sheet: Clean data, Rejected rows,
- * Quality report, Value mappings.
+ * R17 – explode multi-item cells: one output row per item on a *second*
+ * sheet. The clean sheet itself never changes; the toggle defaults to off.
  */
-export function datasetToSheets(dataset: Dataset): SheetSpec[] {
+function explodeDataset(dataset: Dataset): SheetSpec | null {
+  const countColumns = dataset.columns
+    .map((name, index) => ({ name, index }))
+    .filter(({ name, index }) => name.endsWith('_item_count') && dataset.types[index] === 'number');
+  if (countColumns.length === 0) return null;
+
+  let rows: Cell[][] = dataset.rows;
+  for (const { name, index } of countColumns) {
+    const sourceName = name.slice(0, -'_item_count'.length);
+    const sourceIndex = dataset.columns.indexOf(sourceName);
+    if (sourceIndex < 0) continue;
+    const next: Cell[][] = [];
+    for (const row of rows) {
+      const value = row[sourceIndex];
+      const count = row[index];
+      if (typeof value !== 'string' || typeof count !== 'number' || count <= 1) {
+        next.push(row);
+        continue;
+      }
+      for (const item of splitItems(value)) {
+        const copy = [...row];
+        copy[sourceIndex] = item;
+        copy[index] = 1;
+        next.push(copy);
+      }
+    }
+    rows = next;
+  }
+  return { name: 'Exploded data', columns: dataset.columns, rows };
+}
+
+export interface DatasetSheetOptions {
+  /** R17 – add an "Exploded data" sheet with one row per item (default off). */
+  explode?: boolean;
+}
+
+/**
+ * Tabular workbook – P8 multi-sheet: Clean data, Rejected rows,
+ * Quality report, Value mappings (+ "Exploded data" when R17's toggle is on).
+ */
+export function datasetToSheets(dataset: Dataset, options: DatasetSheetOptions = {}): SheetSpec[] {
   const rejected = rejectedToTable(dataset.rejected);
   const quality = qualityToTable(dataset.report);
   const mappings: SheetSpec = {
@@ -192,12 +254,17 @@ export function datasetToSheets(dataset: Dataset): SheetSpec[] {
     columns: ['column', 'from', 'to', 'count'],
     rows: dataset.report.mappings.map((mapping) => [mapping.column, mapping.from, mapping.to, mapping.count]),
   };
-  return [
+  const sheets: SheetSpec[] = [
     { name: 'Clean data', columns: dataset.columns, rows: dataset.rows },
     { name: 'Rejected rows', columns: rejected.columns, rows: rejected.rows },
     { name: 'Quality report', columns: quality.columns, rows: quality.rows },
     mappings,
   ];
+  if (options.explode) {
+    const exploded = explodeDataset(dataset);
+    if (exploded) sheets.push(exploded);
+  }
+  return sheets;
 }
 
 // ------------------------------------------------------------ pivot export --
