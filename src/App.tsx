@@ -315,7 +315,7 @@ export default function App() {
       <footer className="border-t border-[var(--u2s-border)] py-4">
         <p className="muted text-xs text-center">
           Runs entirely client-side (Vite · React · TypeScript · Tailwind · Web Workers) — deployable as a static
-          site on GitHub Pages or Netlify.
+          site on GitHub Pages or Netlify. build {__BUILD_HASH__}
         </p>
       </footer>
     </div>

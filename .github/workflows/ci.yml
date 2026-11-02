@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: Check build stamp landed in dist
+        run: |
+          test -f dist/version.json
+          cat dist/version.json
+          grep -q "<meta name=\"build\"" dist/index.html
+
+  # Runs only once the repository variable LIVE_URL points at the deployed
+  # site (Settings → Secrets and variables → Actions → Variables).
+  verify-deploy:
+    needs: checks
+    if: ${{ vars.LIVE_URL != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fail when the live version.json hash differs from the pushed commit
+        env:
+          LIVE_URL: ${{ vars.LIVE_URL }}
+        run: |
+          expected=$(git rev-parse --short HEAD)
+          live=""
+          body=""
+          for i in $(seq 1 30); do
+            body=$(curl -fsS "$LIVE_URL/version.json" || true)
+            live=$(printf '%s' "$body" | sed -n 's/.*"hash"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+            echo "attempt $i: live='$live' expected='$expected' body='$body'"
+            if [ "$live" = "$expected" ]; then
+              echo "MATCH: live version.json equals pushed commit $expected"
+              exit 0
+            fi
+            sleep 20
+          done
+          echo "MISMATCH: live='$live' expected='$expected'"
+          echo "Check the Vercel dashboard: Build logs, Production branch setting, Domains."
+          exit 1

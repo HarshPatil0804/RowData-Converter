@@ -1,20 +1,21 @@
-node_modules/
-dist/
-coverage/
-*.tsbuildinfo
-preview.log
-.DS_Store
-# Environment variables and secrets
-.env
-.env.*
-!.env.example
-
 # Dependencies
 node_modules/
 
 # Build output
 dist/
 coverage/
+*.tsbuildinfo
 
 # Logs
 *.log
+preview.log
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+.DS_Store
+
+# Nested foreign clone sitting in this folder – not part of this project
+RowData-Converter/
