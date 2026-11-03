@@ -9,6 +9,9 @@ coverage/
 # Logs
 *.log
 preview.log
+# …but the sample inputs are test fixtures, not run output: keep them tracked
+# so a fresh checkout (CI) can run the whole suite.
+!samples/**/*.log
 
 # Environment variables and secrets
 .env

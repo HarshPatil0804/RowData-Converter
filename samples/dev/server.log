@@ -1,0 +1,10 @@
+2024-05-01 09:15:01 INFO  Server started on port 8080
+2024-05-01 09:15:02 DEBUG Loaded config from /etc/app.yaml
+2024-05-01 09:15:44 WARN  Slow query detected: 1.2s
+2024-05-01 09:16:10 ERROR Database connection failed host=db.internal
+2024-05-01 09:16:11 INFO  Retrying connection attempt 1
+2024-05-01 09:16:15 INFO  Connection restored
+2024-05-01 10:00:00 INFO  Scheduled job cleanup finished rows=42
+2024-05-01 10:04:31 ERROR Request failed path=/api/orders status=503
+2024-05-01 10:04:32 INFO  Retry succeeded path=/api/orders
+2024-05-01 11:00:00 INFO  Memory usage 61% heap=344MB
