@@ -10,6 +10,33 @@ client-side JavaScript and WebAssembly.
 > **No backend.** No servers, no API routes, no database. The build output is a folder of
 > static files that runs from GitHub Pages, Netlify, S3, or `file://`.
 
+**Live site:** <https://row-data-converter.vercel.app/> · the footer shows `build <git short
+hash>` and `/version.json` returns the same hash with `Cache-Control: no-store`, so you can
+always tell which commit is being served.
+
+---
+
+## Screens
+
+| Upload | Preview → choose |
+| --- | --- |
+| ![Upload](docs/screens/01-upload-desktop.png) | ![Preview](docs/screens/02-preview-desktop.png) |
+
+| Tabular | Pivot table |
+| --- | --- |
+| ![Tabular](docs/screens/03-tabular-desktop.png) | ![Pivot](docs/screens/05-pivot-desktop.png) |
+
+| Needs review | Dark mode |
+| --- | --- |
+| ![Needs review](docs/screens/04-needs-review-desktop.png) | ![Dark mode](docs/screens/06-tabular-dark-desktop.png) |
+
+| Mobile upload (390 px) | Mobile tabular |
+| --- | --- |
+| ![Mobile upload](docs/screens/07-upload-mobile.png) | ![Mobile tabular](docs/screens/09-tabular-mobile.png) |
+
+All screenshots are captured from the live site by `node e2e/screens.mjs`; that script also
+writes the 1200×630 social card at `public/og.png`.
+
 ---
 
 ## Supported inputs
@@ -104,6 +131,11 @@ Every rule is generic — no column name is ever special-cased.
 | **R9 Logic flags** | Flag only, never delete: `fee_on_cancelled_or_noshow`, `scheduled_in_past` (vs the export date), `paid_without_fee`, `age_missing`. |
 | **R10 Reconciliation** | When the file has a total line, its value is compared with the sum of the parsed numeric column. Both numbers and the difference appear in the Quality Report (and its CSV/JSON download). |
 
+The pipeline also carries later rules (R11–R18) for spelled-out numbers, multi-item cells,
+overlapping categories and blank-row handling; `src/pipeline/rules.ts` is the source of truth.
+
+> Rules R1–R10 are described below; the later ones are additive and never delete rows.
+
 The **Needs review** tab lists every row carrying a flag — ambiguous dates, future dates, id
 conflicts, logic flags, system notes — with a per-flag filter. It is a review queue: the clean
 data itself is unchanged.
@@ -151,7 +183,7 @@ Downloads are generated entirely in the browser with `Blob` + `URL.createObjectU
 npm test
 ```
 
-Six suites, 62 tests:
+Eight suites, 66 tests:
 
 | Suite | Covers |
 | --- | --- |
@@ -161,7 +193,16 @@ Six suites, 62 tests:
 | `tests/pivot.test.ts` | Auto-suggestion and all five aggregations |
 | `tests/export.test.ts` | CSV / JSON / XLSX round-trips through real parsers |
 | `tests/offline.test.ts` | No external origins in source or in the built entry HTML |
+| `tests/fuzz/accuracy.test.ts` | Randomised datasets through a generator/injector harness: parse what was injected, clean what was dirtied, without over-cleaning what was already clean |
+| `tests/fuzz/smoke.test.ts` | The fuzz entries themselves stay tractable |
 | `tests/helpers.ts` | Shared sample-loading fixtures |
+
+Correctness is not judged by eyeballing output. The hospital suite pins exact numbers from a
+real messy export, and the fuzz suite builds datasets from a known-clean source, injects the
+kinds of damage real exports contain (junk rows, mixed date orders, currency noise, packed
+cells, duplicates, casing variants), then asserts that every cell that was *not* damaged is
+preserved and every cell that *was* is recovered. A rule that fixes one case by breaking
+another fails there.
 
 ### The hospital regression sample
 
@@ -203,6 +244,23 @@ npm run build
 The output is a self-contained static site in `dist/`. Vite is configured with
 `base: './'`, so the app works from any sub-path (e.g. GitHub Pages project sites).
 
+### Vercel
+
+The live site deploys from `main` with `vercel.json`:
+
+- **Build command:** `npm run build` · **Output:** `dist` · **Node:** 22 (`engines.node`)
+- SPA fallback rewrite to `/index.html`, except `/version.json`, `/sw.js`, `/assets/`, `/tess/`,
+  `/tessdata/`
+- `/version.json` served as JSON with `Cache-Control: no-store`
+- CSP (`default-src 'self'`), `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff`,
+  `X-Frame-Options: DENY`, and a `Permissions-Policy` that denies camera, microphone and
+  geolocation
+
+The build stamps itself: Vite injects the git short hash and ISO timestamp, writes
+`dist/version.json`, and adds `<meta name="build">`. After a push, CI polls the live
+`/version.json` and **fails if its hash is not the commit that was just built** — so a stale or
+un-connected deployment cannot pass silently.
+
 ### Netlify
 
 - **Build command:** `npm run build`
@@ -229,6 +287,22 @@ Any other static host works the same way: publish `dist/`, no server required.
   vendored into `public/`, not loaded from a CDN. `npm test` asserts this.
 - The only script that touches the network is `scripts/fetch-ocr-data.mjs`, which runs at
   setup time to restore language data.
+- **Clear data** in the header drops the loaded results and empties `localStorage`,
+  `sessionStorage`, IndexedDB and the Cache API. Only the light/dark preference is kept.
+
+### Verify the privacy claim yourself
+
+1. Open the live site, then DevTools → **Network**, and clear the list.
+2. Convert anything — CSV, XLSX, PDF, an image, a ZIP.
+3. Filter the list by **Fetch/XHR** and by **Other** (workers, wasm). Every request is
+   same-origin (`row-data-converter.vercel.app`); none carries file bytes. A cross-origin
+   request would be visible as a different domain in the *Domain* column.
+4. DevTools → **Application** → *Local Storage*, *Session Storage*, *IndexedDB*,
+   *Cache Storage*: nothing but the theme key and the service worker's own app-shell assets.
+
+This is measured, not asserted: `node e2e/run.mjs --mode privacy` converts one file of each
+input type and fails the run on any cross-origin request or any non-asset entry in browser
+storage. The latest run is recorded in `docs/live-audit.md`.
 
 ---
 

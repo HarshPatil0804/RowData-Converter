@@ -33,6 +33,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
       - name: Fail when the live version.json hash differs from the pushed commit
         env:
           LIVE_URL: ${{ vars.LIVE_URL }}
@@ -53,3 +58,11 @@ jobs:
           echo "MISMATCH: live='$live' expected='$expected'"
           echo "Check the Vercel dashboard: Build logs, Production branch setting, Domains."
           exit 1
+
+      # Drives the deployed site in real Chrome: uploads samples, waits for the
+      # result, downloads the CSV, and fails on any console error, failed
+      # request or non-2xx response.
+      - name: Playwright smoke test on the live site
+        env:
+          LIVE_URL: ${{ vars.LIVE_URL }}
+        run: node e2e/run.mjs --base-url "$LIVE_URL" --files samples/dev --out e2e-out --limit 3
