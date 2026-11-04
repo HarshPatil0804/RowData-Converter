@@ -21,9 +21,18 @@
  * Always reports: processing time per file, console errors, failed requests.
  */
 import { chromium } from 'playwright-core';
+import Papa from 'papaparse';
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
+
+/**
+ * Expected content per sample, generated from the Node pipeline. The parity
+ * suite proves the production bundle emits the same CSV, so these numbers hold
+ * for the deployed app; this file makes the live run assert *content*, not just
+ * that a download happened.
+ */
+const EXPECTED = JSON.parse(fs.readFileSync(path.resolve('e2e/expected.json'), 'utf8')).files;
 
 // ---------------------------------------------------------------- args -----
 function arg(name, fallback) {
@@ -71,6 +80,7 @@ const report = {
   badResponses: [],
   crossOrigin: [],
   storageFindings: [],
+  contentFailures: [],
   perf: null,
   mobile: null,
   darkMode: null,
@@ -161,9 +171,17 @@ function stem(name) {
   return name.replace(/\.[^.]+$/, '');
 }
 
-async function convertOne(tab, filePath, { wantPivot = true } = {}) {
+async function convertOne(tab, filePath, { wantPivot = true, recordIt = true } = {}) {
   const name = path.basename(filePath);
-  const record = { file: name, ok: false, processMs: null, csv: null, xlsx: null, rows: null };
+  const record = {
+    file: name,
+    ok: false,
+    processMs: null,
+    csv: null,
+    xlsx: null,
+    rows: null,
+    content: null,
+  };
   const started = Date.now();
 
   await tab.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
@@ -189,8 +207,32 @@ async function convertOne(tab, filePath, { wantPivot = true } = {}) {
     report.pivot = { ...report.pivot, [name]: record.xlsx !== null };
   }
 
-  record.ok = record.csv !== null;
-  report.files.push(record);
+  // --- content check: row count and three known cells --------------------
+  const expected = EXPECTED[name];
+  if (record.csv && expected) {
+    const parsed = Papa.parse(fs.readFileSync(record.csv, 'utf8'), { skipEmptyLines: true });
+    const data = parsed.data;
+    const body = data.slice(1);
+    const problems = [];
+    if (data.length === 0) problems.push('empty CSV');
+    if (body.length !== expected.rows) problems.push(`rows ${body.length} != ${expected.rows}`);
+    if ((data[0] ?? []).length !== expected.columns) {
+      problems.push(`columns ${(data[0] ?? []).length} != ${expected.columns}`);
+    }
+    for (const [row, column, value] of expected.cells) {
+      const actual = body[row]?.[column];
+      if (String(actual ?? '') !== String(value)) {
+        problems.push(`cell[${row},${column}] ${JSON.stringify(actual)} != ${JSON.stringify(value)}`);
+      }
+    }
+    record.content = { ok: problems.length === 0, checked: expected.cells.length, problems };
+    if (!record.content.ok) {
+      report.contentFailures.push(`${name}: ${problems.join('; ')}`);
+    }
+  }
+
+  record.ok = record.csv !== null && (record.content?.ok ?? false);
+  if (recordIt) report.files.push(record);
   return record;
 }
 
@@ -246,12 +288,26 @@ async function runConvert(browser, files) {
   const mobile = await mobileContext.newPage();
   watch(mobile, '[mobile] ');
   const target = files.find((f) => /\.csv$/i.test(f)) ?? files[0];
-  const record = await convertOne(mobile, target, { wantPivot: false });
-  const overflow = await mobile.evaluate(
-    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
-  );
-  report.mobile = { file: path.basename(target), ok: record.ok, horizontalOverflowPx: overflow };
-  console.log(`mobile 390px: ok=${record.ok} overflow=${overflow}px`);
+  let record = null;
+  try {
+    record = await convertOne(mobile, target, { wantPivot: false, recordIt: false });
+  } catch (error) {
+    const message = error.message.split('\n')[0];
+    report.files.push({ file: path.basename(target), ok: false, error: `[mobile] ${message}` });
+    console.log(`mobile 390px: FAILED ${message.slice(0, 120)}`);
+  }
+  if (record) {
+    const overflow = await mobile.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+    report.mobile = {
+      file: path.basename(target),
+      ok: record.ok,
+      contentOk: record.content?.ok ?? false,
+      horizontalOverflowPx: overflow,
+    };
+    console.log(`mobile 390px: ok=${record.ok} overflow=${overflow}px`);
+  }
   await mobileContext.close();
 
   await context.close();
@@ -406,7 +462,7 @@ async function main() {
         .readdirSync(FILES_DIR)
         .filter((name) => fs.statSync(path.join(FILES_DIR, name)).isFile())
         .filter((name) => !name.startsWith('.'))
-        .filter((name) => !/^(readme|current_)/i.test(name))
+        .filter((name) => !/^current_/i.test(name))
         .sort()
         .map((name) => path.join(FILES_DIR, name));
       const limit = Number(arg('limit', '0'));
@@ -429,6 +485,8 @@ async function main() {
   console.log(`4xx/5xx responses : ${report.badResponses.length}`);
   console.log(`cross-origin reqs : ${report.crossOrigin.length}`);
   console.log(`storage findings  : ${report.storageFindings.length}`);
+  console.log(`content mismatches: ${report.contentFailures.length}`);
+  if (report.contentFailures.length) console.log(`  ${report.contentFailures.slice(0, 8).join('\n  ')}`);
   if (report.consoleErrors.length) console.log(`  ${report.consoleErrors.slice(0, 5).join('\n  ')}`);
   if (report.failedRequests.length) console.log(`  ${report.failedRequests.slice(0, 5).join('\n  ')}`);
   if (report.crossOrigin.length) console.log(`  ${report.crossOrigin.slice(0, 5).join('\n  ')}`);
@@ -436,7 +494,11 @@ async function main() {
   console.log(`report            : ${summaryPath}`);
 
   const failures =
-    report.files.length - okFiles + report.consoleErrors.length + report.failedRequests.length;
+    report.files.length -
+    okFiles +
+    report.consoleErrors.length +
+    report.failedRequests.length +
+    report.contentFailures.length;
   process.exit(failures > 0 ? 1 : 0);
 }
 

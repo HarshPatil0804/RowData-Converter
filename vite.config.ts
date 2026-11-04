@@ -1,5 +1,6 @@
 import { execSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
@@ -37,6 +38,14 @@ export default defineConfig({
       },
       closeBundle() {
         writeFileSync('dist/version.json', `${JSON.stringify({ hash: BUILD_HASH, builtAt: BUILT_AT })}\n`);
+        // Precache list for the service worker: every content-hashed bundle,
+        // including the workers, so the app opens (and converts) with no
+        // network. Written at build time because the hashes only exist now.
+        const assetsDir = join('dist', 'assets');
+        const assets = existsSync(assetsDir)
+          ? readdirSync(assetsDir).map((name) => `./assets/${name}`)
+          : [];
+        writeFileSync('dist/assets.json', `${JSON.stringify({ hash: BUILD_HASH, assets })}\n`);
       },
     },
   ],

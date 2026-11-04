@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+
+# The app has a single entry point; every view is client-side.
+Disallow: /assets/

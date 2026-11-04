@@ -17,28 +17,39 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run typecheck
-      - run: npm test
+      # Build first: the browser-parity and service-worker suites drive the
+      # production bundle in real Chrome, so dist/ must exist before `npm test`.
       - run: npm run build
       - name: Check build stamp landed in dist
         run: |
           test -f dist/version.json
           cat dist/version.json
           grep -q "<meta name=\"build\"" dist/index.html
+      - run: npm test
 
-  # Runs only once the repository variable LIVE_URL points at the deployed
-  # site (Settings → Secrets and variables → Actions → Variables).
+  # Verifies the deployed site. Needs the repository variable LIVE_URL
+  # (Settings → Secrets and variables → Actions → Variables → New variable).
+  # When it is missing the job still runs so it can say so out loud: a silent
+  # skip looks exactly like a passing deploy check.
   verify-deploy:
     needs: checks
-    if: ${{ vars.LIVE_URL != '' }}
     runs-on: ubuntu-latest
     steps:
+      - name: Announce a missing LIVE_URL
+        if: ${{ vars.LIVE_URL == '' }}
+        run: |
+          echo "::warning title=LIVE_URL is not set::The live-hash gate and the Playwright smoke test did NOT run. Add a repository variable LIVE_URL = https://row-data-converter.vercel.app (Settings → Secrets and variables → Actions → Variables) to enable them."
       - uses: actions/checkout@v4
+        if: ${{ vars.LIVE_URL != '' }}
       - uses: actions/setup-node@v4
+        if: ${{ vars.LIVE_URL != '' }}
         with:
           node-version: 22
           cache: npm
       - run: npm ci
+        if: ${{ vars.LIVE_URL != '' }}
       - name: Fail when the live version.json hash differs from the pushed commit
+        if: ${{ vars.LIVE_URL != '' }}
         env:
           LIVE_URL: ${{ vars.LIVE_URL }}
         run: |
@@ -62,7 +73,11 @@ jobs:
       # Drives the deployed site in real Chrome: uploads samples, waits for the
       # result, downloads the CSV, and fails on any console error, failed
       # request or non-2xx response.
-      - name: Playwright smoke test on the live site
+      # Uploads real samples to the deployed site and asserts row counts and
+      # specific cells against e2e/expected.json, so a regression in the live
+      # build fails here instead of being noticed by a visitor.
+      - name: Playwright content test on the live site
+        if: ${{ vars.LIVE_URL != '' }}
         env:
           LIVE_URL: ${{ vars.LIVE_URL }}
-        run: node e2e/run.mjs --base-url "$LIVE_URL" --files samples/dev --out e2e-out --limit 3
+        run: node e2e/run.mjs --base-url "$LIVE_URL" --files samples/dev --out e2e-out

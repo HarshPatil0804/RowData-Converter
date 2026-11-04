@@ -3,9 +3,29 @@ import type { Cell, Extraction } from '../../types';
 import { formatJsDate } from '../../lib/dates';
 import { generatedNames, looksLikeHeaderRow, padRows } from '../../lib/table';
 
-function toCell(value: unknown): Cell {
+/** A user-visible time component: `14:30`, or an AM/PM marker. */
+const SHOWS_TIME = /:|\b(am|pm)\b/i;
+
+/**
+ * One spreadsheet cell as a pipeline value.
+ *
+ * A date cell holds an Excel serial, which has no timezone; SheetJS turns it
+ * into a JS Date in **local** time, so the same file can yield `00:00:00Z` in
+ * one runtime and `00:00:10Z` in another depending on the machine's offset.
+ * The cell's own rendered text (`w`) is the honest signal: Excel shows
+ * `4/2/24` for a date and adds a time only when the format has one. A date is
+ * therefore emitted as a plain ISO day unless the cell actually displays a
+ * time — which keeps Node, the browser worker and the exported CSV identical.
+ */
+function toCell(value: unknown, shown: unknown): Cell {
   if (value === null || value === undefined) return null;
-  if (value instanceof Date) return formatJsDate(value);
+  if (value instanceof Date) {
+    const formatted = formatJsDate(value);
+    if (formatted === null) return null;
+    const rendered = typeof shown === 'string' ? shown : '';
+    if (!formatted.includes('T') || !SHOWS_TIME.test(rendered)) return formatted.slice(0, 10);
+    return formatted;
+  }
   if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'string') return value;
   if (typeof value === 'bigint') return String(value);
   return String(value);
@@ -49,8 +69,20 @@ export function spreadsheetToExtraction(buffer: ArrayBuffer, source: string): Ex
     defval: null,
     blankrows: false,
   });
+  // The same grid with Excel's own rendering, used only to tell a date from a
+  // date-time (see toCell). Same options, so the two grids stay aligned.
+  const rendered = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
+    header: 1,
+    raw: false,
+    defval: null,
+    blankrows: false,
+  });
 
-  const rows = grid.map((row) => (Array.isArray(row) ? row.map(toCell) : [toCell(row)]));
+  const rows = grid.map((row, rowIndex) =>
+    Array.isArray(row)
+      ? row.map((value, columnIndex) => toCell(value, rendered[rowIndex]?.[columnIndex]))
+      : [toCell(row, rendered[rowIndex]?.[0])],
+  );
   if (rows.length === 0) {
     return {
       kind: 'table',

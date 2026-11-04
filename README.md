@@ -183,11 +183,14 @@ Downloads are generated entirely in the browser with `Blob` + `URL.createObjectU
 npm test
 ```
 
-Eight suites, 66 tests:
+Eleven suites, 70 tests:
 
 | Suite | Covers |
 | --- | --- |
 | `tests/hospital.test.ts` | **Acceptance suite** — R1–R10 and P1–P9 against `samples/hospital/raw.csv` |
+| `tests/parity.test.ts` | **Production bundle parity** — every sample through `vite preview` in headless Chromium, CSV compared byte for byte with the Node pipeline |
+| `tests/sw-update.test.ts` | Service worker: offline fallback works, a new build appears after one reload, the cache holds app assets only |
+| `tests/date-toggle.test.ts` | R3 toggle: ambiguous dates really change, dates proven by the data do not |
 | `tests/pipeline.test.ts` | Every sample file converts to a clean table automatically |
 | `tests/ocr.test.ts` | Scanned-image OCR → reconstructed table |
 | `tests/pivot.test.ts` | Auto-suggestion and all five aggregations |
@@ -196,6 +199,30 @@ Eight suites, 66 tests:
 | `tests/fuzz/accuracy.test.ts` | Randomised datasets through a generator/injector harness: parse what was injected, clean what was dirtied, without over-cleaning what was already clean |
 | `tests/fuzz/smoke.test.ts` | The fuzz entries themselves stay tractable |
 | `tests/helpers.ts` | Shared sample-loading fixtures |
+
+`tests/parity.test.ts` exists because the unit tests run in Node while production runs
+in a browser worker, and that gap hid a live defect: mammoth's **browser** build reads
+`options.arrayBuffer` while its **Node** build reads `options.buffer`, so every `.docx` failed on the
+deployed site with a green suite. The parity suite now runs each sample through the built bundle
+and fails on a single differing byte.
+
+### Dependencies with separate browser and Node builds
+
+Vite resolves the `browser`/`module` entries, Vitest and Node resolve `main`/`exports`. Any
+package that branches on the environment is a place where the two can disagree:
+
+| Package | Node build (tests) | Browser build (deployed) | Consequence |
+| --- | --- | --- | --- |
+| `mammoth` | `lib/unzip.js` — reads `options.buffer` | `browser/unzip.js` — reads `options.arrayBuffer` | Every `.docx` failed live; `src/pipeline/extract/docx.ts` now supplies both keys |
+| `jszip` | `lib/index.js` with `readable-stream` shim | `dist/jszip.min.js` | ZIP extraction is only proven in the browser by the parity suite |
+| `papaparse` | `papaparse.js` | `papaparse.min.js` | Same parser, minified |
+| `pdfjs-dist` | `build/pdf.mjs`, with `fs`, `canvas`, `http`, `url` available | the same modules mapped to `false` | pdf.js takes its fetch/canvas path in the worker; `pdf.worker.min.mjs` is precached |
+| `tesseract.js` | `src/worker/node/index.js` | `src/worker/browser/index.js` | The OCR unit test runs in the Node environment; the browser worker path is covered by the live run |
+| `xlsx` | `xlsx.js` (CommonJS, `crypto` available) | `xlsx.mjs` (`crypto`, `fs`, `buffer`, `stream` disabled) | Date cells: the reader now decides date vs date-time from the cell's rendered text instead of a timezone-dependent `Date` |
+| `react-dom` | `server.js` | `server.browser.js` | `server.*` is not imported at runtime |
+
+Neither build is "the" build — they are different code paths for the same feature, which is why
+every input type is exercised in the browser before a deploy.
 
 Correctness is not judged by eyeballing output. The hospital suite pins exact numbers from a
 real messy export, and the fuzz suite builds datasets from a known-clean source, injects the
@@ -246,6 +273,12 @@ The output is a self-contained static site in `dist/`. Vite is configured with
 
 ### Vercel
 
+To turn on the deploy gate, add one repository variable — **Settings → Secrets and variables →
+Actions → Variables → New repository variable**, name `LIVE_URL`,
+value `https://row-data-converter.vercel.app`. While it is unset the `verify-deploy` job still
+runs and posts a `LIVE_URL is not set` warning annotation, so a skipped deploy check is visible
+in the Actions summary instead of looking like a pass.
+
 The live site deploys from `main` with `vercel.json`:
 
 - **Build command:** `npm run build` · **Output:** `dist` · **Node:** 22 (`engines.node`)
@@ -289,6 +322,24 @@ Any other static host works the same way: publish `dist/`, no server required.
   setup time to restore language data.
 - **Clear data** in the header drops the loaded results and empties `localStorage`,
   `sessionStorage`, IndexedDB and the Cache API. Only the light/dark preference is kept.
+
+### Service worker policy
+
+`public/sw.js` exists because the deployed site registered a service worker but shipped no
+`sw.js`, which logged a `404 /sw.js` on every visit. It is deliberately narrow:
+
+| Request | Policy |
+| --- | --- |
+| Navigations (`index.html`) | network first, `cache: 'no-store'`; the cached copy is only the offline fallback — a new deploy is live on the next reload |
+| `/version.json` | never intercepted, so the build stamp is always the live commit |
+| `/assets/`, `/tess/`, `/tessdata/` | cache first — those names are content hashed or engine versioned, so a cached copy cannot go stale |
+| `blob:`, `data:`, other origins, every other path | untouched |
+
+The shell and every hashed bundle are precached at install from `dist/assets.json` (written by
+the build), because the first page load's asset requests happen before the worker can control
+them. `tests/sw-update.test.ts` proves the whole policy: it serves a build, kills the network and
+reloads (the app must still render), swaps in a second build and reloads (the new hash must
+appear), and asserts the cache contains only app assets — never file content.
 
 ### Verify the privacy claim yourself
 

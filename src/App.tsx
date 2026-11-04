@@ -287,7 +287,7 @@ export default function App() {
             <button
               className="btn btn-secondary"
               onClick={() => setDark((value) => !value)}
-              aria-label="Toggle dark mode"
+              aria-label={dark ? 'Light — toggle dark mode' : 'Dark — toggle dark mode'}
               title="Toggle dark mode"
             >
               {dark ? '☀️ Light' : '🌙 Dark'}
@@ -304,9 +304,9 @@ export default function App() {
             <Dropzone onFiles={handleFiles} />
             {errors.length > 0 && (
               <div className="card border-red-300 dark:border-red-900 p-4" role="alert">
-                <h3 className="font-semibold text-red-600 dark:text-red-400 text-sm">
+                <h2 className="font-semibold text-red-600 dark:text-red-400 text-sm">
                   {errors.length === 1 ? '1 file could not be processed' : `${errors.length} files could not be processed`}
-                </h3>
+                </h2>
                 <ul className="mt-2 space-y-1 text-xs">
                   {errors.map((error) => (
                     <li key={error.name} className="muted">
@@ -328,7 +328,7 @@ export default function App() {
                 { title: '3 · Flexible', text: 'Pick Tabular or Pivot at the end, switch freely, then download CSV / XLSX / JSON.' },
               ].map((item) => (
                 <div key={item.title} className="card p-4">
-                  <h3 className="font-semibold text-sm">{item.title}</h3>
+                  <h2 className="font-semibold text-sm">{item.title}</h2>
                   <p className="muted text-xs mt-1">{item.text}</p>
                 </div>
               ))}
@@ -360,9 +360,9 @@ export default function App() {
             />
             {errors.length > 0 && (
               <div className="card border-amber-300 dark:border-amber-900 p-4" role="alert">
-                <h3 className="font-semibold text-amber-700 dark:text-amber-400 text-sm">
+                <h2 className="font-semibold text-amber-700 dark:text-amber-400 text-sm">
                   Some files were skipped
-                </h3>
+                </h2>
                 <ul className="mt-2 space-y-1 text-xs">
                   {errors.map((error) => (
                     <li key={error.name} className="muted">

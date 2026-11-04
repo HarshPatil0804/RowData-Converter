@@ -3,7 +3,7 @@
   "outputDirectory": "dist",
   "rewrites": [
     {
-      "source": "/((?!version\\.json$|sw\\.js$|assets/|tess/|tessdata/).*)",
+      "source": "/((?!version\\.json$|assets\\.json$|robots\\.txt$|sw\\.js$|assets/|tess/|tessdata/).*)",
       "destination": "/index.html"
     }
   ],

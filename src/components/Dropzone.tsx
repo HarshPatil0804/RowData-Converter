@@ -19,7 +19,6 @@ export default function Dropzone({ onFiles, disabled }: DropzoneProps) {
     <div
       role="button"
       tabIndex={0}
-      aria-label="Upload files"
       className={`dropzone ${over ? 'dropzone-active' : ''} flex flex-col items-center justify-center gap-3 px-6 py-14 text-center cursor-pointer`}
       onClick={() => inputRef.current?.click()}
       onKeyDown={(event) => {
