@@ -3,7 +3,7 @@ import type { Dataset } from '../types';
 import type { ResultItem } from '../App';
 import type { DateOrderMode } from '../lib/dates';
 import { datasetToSheets, downloadCSV, downloadJSON, downloadXLSX, downloadText, qualityToCSV } from '../lib/export';
-import { computePivot, suggestPivot } from '../lib/pivot';
+import { suggestPivot } from '../lib/pivot';
 import { displayCell } from '../lib/strings';
 import TabularView from './TabularView';
 import PivotView from './PivotView';
@@ -48,11 +48,10 @@ export default function ChoiceScreen({
   const active: Dataset = results[activeIndex]?.dataset ?? results[0].dataset;
   const report = active.report;
 
-  // A sensible pivot, computed once per file, shown in the preview card too.
-  const suggested = useMemo(() => {
-    const config = suggestPivot(active);
-    return { config, table: computePivot(active, config) };
-  }, [active]);
+  // A sensible pivot axis pair for the preview card. Only the config is shown
+  // here; PivotView computes its own table, so pivoting 500k rows eagerly just
+  // blocked the main thread for nothing.
+  const suggested = useMemo(() => suggestPivot(active), [active]);
 
   const hasItemCounts = active.columns.some((column) => column.endsWith('_item_count'));
 
@@ -183,9 +182,9 @@ export default function ChoiceScreen({
             <p className="muted text-xs mt-1">
               Drag-and-drop builder with sum, count, avg, min and max. Suggested default:{' '}
               <span className="font-semibold text-slate-700 dark:text-slate-300">
-                {suggested.config.rows.join(', ') || '—'}
-                {suggested.config.cols.length > 0 ? ` × ${suggested.config.cols.join(', ')}` : ''}
-                {suggested.config.value ? ` → ${suggested.config.agg}(${suggested.config.value})` : ''}
+                {suggested.rows.join(', ') || '—'}
+                {suggested.cols.length > 0 ? ` × ${suggested.cols.join(', ')}` : ''}
+                {suggested.value ? ` → ${suggested.agg}(${suggested.value})` : ''}
               </span>
               . Download as XLSX or CSV.
             </p>
@@ -197,7 +196,7 @@ export default function ChoiceScreen({
       {mode === 'tabular' && (
         <div className="flex flex-col gap-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <button className="btn btn-primary" onClick={() => downloadTabular('csv')}>
                 Download CSV
               </button>

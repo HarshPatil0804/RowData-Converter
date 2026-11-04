@@ -3,11 +3,13 @@ export interface ProcessingViewProps {
   message: string;
   current: number;
   total: number;
+  /** Stops the worker and returns to the upload screen. */
+  onCancel: () => void;
 }
 
 const STAGES = ['detect', 'extract', 'structure', 'clean', 'report'] as const;
 
-export default function ProcessingView({ pct, message, current, total }: ProcessingViewProps) {
+export default function ProcessingView({ pct, message, current, total, onCancel }: ProcessingViewProps) {
   const clamped = Math.max(0, Math.min(100, pct));
 
   return (
@@ -55,9 +57,14 @@ export default function ProcessingView({ pct, message, current, total }: Process
         })}
       </ol>
 
-      <p className="muted text-xs">
-        All parsing, OCR and cleaning runs in a Web Worker on this device — nothing is uploaded anywhere.
-      </p>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="muted text-xs">
+          All parsing, OCR and cleaning runs in a Web Worker on this device — nothing is uploaded anywhere.
+        </p>
+        <button className="btn btn-secondary" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
     </div>
   );
 }

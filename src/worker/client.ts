@@ -1,5 +1,5 @@
 import type { DateOrderMode } from '../lib/dates';
-import type { Dataset, ProgressUpdate } from '../types';
+import type { Cell, Dataset, ProgressUpdate } from '../types';
 
 export interface ProcessJob {
   name: string;
@@ -13,6 +13,7 @@ export interface ProcessJob {
 
 type WorkerResponse =
   | { type: 'progress'; id: number; progress: ProgressUpdate }
+  | { type: 'rows'; id: number; index: number; rows: Cell[][] }
   | { type: 'result'; id: number; datasets: Dataset[] }
   | { type: 'error'; id: number; message: string };
 
@@ -20,6 +21,8 @@ interface Pending {
   resolve: (datasets: Dataset[]) => void;
   reject: (error: Error) => void;
   onProgress?: (update: ProgressUpdate) => void;
+  /** Rows streamed in chunks by the worker, keyed by dataset index. */
+  rows?: Cell[][][];
 }
 
 /**
@@ -41,9 +44,21 @@ export class PipelineClient {
         entry.onProgress?.(message.progress);
         return;
       }
+      if (message.type === 'rows') {
+        entry.rows ??= [];
+        const bucket = (entry.rows[message.index] ??= []);
+        for (const row of message.rows) bucket.push(row);
+        return;
+      }
       this.pending.delete(message.id);
-      if (message.type === 'result') entry.resolve(message.datasets);
-      else entry.reject(new Error(message.message));
+      if (message.type === 'result') {
+        const chunks = entry.rows;
+        entry.resolve(
+          chunks
+            ? message.datasets.map((dataset, index) => ({ ...dataset, rows: chunks[index] ?? dataset.rows }))
+            : message.datasets,
+        );
+      } else entry.reject(new Error(message.message));
     };
     this.worker.onerror = (event) => {
       const error = new Error(event.message || 'Worker failed');

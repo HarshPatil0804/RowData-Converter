@@ -4,6 +4,7 @@ import Dropzone from './components/Dropzone';
 import ProcessingView from './components/ProcessingView';
 import ChoiceScreen from './components/ChoiceScreen';
 import { PipelineClient } from './worker/client';
+import { clearStoredData } from './lib/privacy';
 import type { DateOrderMode } from './lib/dates';
 import type { Dataset } from './types';
 
@@ -16,10 +17,20 @@ export interface ResultItem {
 interface Source {
   name: string;
   mime: string;
-  bytes: ArrayBuffer;
+  /** Kept as a File, not a copied buffer: re-runs re-read it on demand, which
+   *  avoids holding (and synchronously copying) a second copy of large files. */
+  file: File;
 }
 
 type Stage = 'upload' | 'processing' | 'choose';
+
+/**
+ * Beyond this size a single file takes minutes in the browser tab, so it is
+ * refused up front with a readable message instead of appearing to hang.
+ */
+const MAX_FILE_BYTES = 200 * 1024 * 1024;
+
+const formatMB = (bytes: number): string => `${Math.round(bytes / (1024 * 1024))} MB`;
 
 interface ProgressState {
   pct: number;
@@ -41,6 +52,8 @@ export default function App() {
   const [errors, setErrors] = useState<FileError[]>([]);
   const [downloaded, setDownloaded] = useState(false);
   const [dark, setDark] = useState(() => document.documentElement.classList.contains('dark'));
+  /** Brief confirmation after "Clear data" – nothing else is user-visible. */
+  const [cleared, setCleared] = useState(false);
   /** R3 – 'auto' keeps unproven dates + suggestions; DM/MD applies that order. */
   const [dateOrder, setDateOrder] = useState<DateOrderMode>('auto');
   /** Principle 2 – review items the user accepted; re-runs apply them. */
@@ -48,6 +61,8 @@ export default function App() {
   const clientRef = useRef<PipelineClient | null>(null);
   /** Kept so the R3 toggle / Accept button can re-run without a re-upload. */
   const sourcesRef = useRef<Source[]>([]);
+  /** Set by Cancel so an in-flight run stops instead of finishing silently. */
+  const cancelledRef = useRef(false);
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', dark);
@@ -61,6 +76,7 @@ export default function App() {
   useEffect(() => () => clientRef.current?.dispose(), []);
 
   const handleFiles = useCallback(async (files: File[]) => {
+    cancelledRef.current = false;
     setStage('processing');
     setErrors([]);
     setResults([]);
@@ -74,7 +90,17 @@ export default function App() {
     const sources: Source[] = [];
 
     for (let index = 0; index < files.length; index += 1) {
+      if (cancelledRef.current) break;
       const file = files[index];
+      if (file.size > MAX_FILE_BYTES) {
+        failed.push({
+          name: file.name,
+          message:
+            `is too large (${formatMB(file.size)}; this browser build handles up to ${formatMB(MAX_FILE_BYTES)} per file). ` +
+            'Split it into smaller files and try again — nothing was uploaded.',
+        });
+        continue;
+      }
       setProgress({
         pct: (index / files.length) * 100,
         message: `Reading ${file.name}`,
@@ -83,9 +109,9 @@ export default function App() {
       });
       try {
         const buffer = await file.arrayBuffer();
-        // The worker transfer detaches the buffer, so keep a private copy for
-        // the R3 re-run toggle.
-        sources.push({ name: file.name, mime: file.type || 'application/octet-stream', bytes: buffer.slice(0) });
+        // The worker transfer detaches the buffer; the File stays readable, so
+        // the R3 re-run toggle re-reads it instead of copying 50 MB up front.
+        sources.push({ name: file.name, mime: file.type || 'application/octet-stream', file });
         const datasets = await client.process(
           { name: file.name, mime: file.type || 'application/octet-stream', buffer, dateOrder },
           (update) =>
@@ -104,10 +130,16 @@ export default function App() {
           });
         });
       } catch (error) {
-        failed.push({ name: file.name, message: error instanceof Error ? error.message : String(error) });
+        const message = error instanceof Error ? error.message : String(error);
+        if (message === 'Cancelled' || cancelledRef.current) break;
+        failed.push({ name: file.name, message });
       }
     }
 
+    if (cancelledRef.current) {
+      setProgress(null);
+      return;
+    }
     setProgress(null);
     setErrors(failed);
     sourcesRef.current = sources;
@@ -127,6 +159,7 @@ export default function App() {
    */
   const rerun = useCallback(async (nextDateOrder: DateOrderMode, nextAccepted: string[]) => {
     const sources = sourcesRef.current;
+    cancelledRef.current = false;
     setDateOrder(nextDateOrder);
     setAccepted(nextAccepted);
     if (sources.length === 0) return;
@@ -145,7 +178,7 @@ export default function App() {
           {
             name: source.name,
             mime: source.mime,
-            buffer: source.bytes.slice(0),
+            buffer: await source.file.arrayBuffer(),
             dateOrder: nextDateOrder,
             acceptReviews: nextAccepted,
           },
@@ -165,10 +198,16 @@ export default function App() {
           });
         });
       } catch (error) {
-        failed.push({ name: source.name, message: error instanceof Error ? error.message : String(error) });
+        const message = error instanceof Error ? error.message : String(error);
+        if (message === 'Cancelled' || cancelledRef.current) break;
+        failed.push({ name: source.name, message });
       }
     }
 
+    if (cancelledRef.current) {
+      setProgress(null);
+      return;
+    }
     setProgress(null);
     setErrors(failed);
     if (collected.length > 0) {
@@ -195,7 +234,19 @@ export default function App() {
     [accepted, dateOrder, rerun],
   );
 
+  /** Stops the running worker and drops back to the upload screen. */
+  const cancel = useCallback(() => {
+    cancelledRef.current = true;
+    clientRef.current?.dispose();
+    clientRef.current = null;
+    setProgress(null);
+    setResults([]);
+    setErrors([]);
+    setStage('upload');
+  }, []);
+
   const restart = useCallback(() => {
+    sourcesRef.current = [];
     setStage('upload');
     setResults([]);
     setErrors([]);
@@ -220,6 +271,19 @@ export default function App() {
           </div>
           <div className="flex items-center gap-2">
             <span className="hidden md:inline-flex badge badge-boolean">offline-ready</span>
+            <button
+              className="btn btn-secondary"
+              onClick={() => {
+                cancel();
+                void clearStoredData().then(() => {
+                  setCleared(true);
+                  window.setTimeout(() => setCleared(false), 2500);
+                });
+              }}
+              title="Remove anything this page stored on this device"
+            >
+              {cleared ? 'Cleared ✓' : 'Clear data'}
+            </button>
             <button
               className="btn btn-secondary"
               onClick={() => setDark((value) => !value)}
@@ -278,6 +342,7 @@ export default function App() {
             message={progress.message}
             current={progress.current}
             total={progress.total}
+            onCancel={cancel}
           />
         )}
 

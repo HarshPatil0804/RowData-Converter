@@ -177,7 +177,7 @@ export default function TabularView({ dataset }: TabularViewProps) {
         <span className="muted text-xs mono-num">
           Page {(table.getState().pagination.pageIndex + 1).toLocaleString()} of {pageCount.toLocaleString()}
         </span>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <button className="btn btn-secondary" onClick={() => table.previousPage()} disabled={!table.getCanPreviousPage()}>
             ← Previous
           </button>

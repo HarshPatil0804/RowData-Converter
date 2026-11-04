@@ -126,6 +126,37 @@ async function grabDownload(tab, button, dest) {
   }
 }
 
+/**
+ * Wait for the app to reach a verdict: success ('Your data is ready') or a
+ * per-file failure. Waiting only for success turns every rejection into a
+ * five-minute stall, so the error state is reported as a real failure.
+ */
+async function waitForResult(tab, timeoutMs = 300_000) {
+  const started = Date.now();
+  for (;;) {
+    const state = await tab.evaluate(() => {
+      const body = document.body.innerText;
+      return {
+        ready: body.includes('Your data is ready'),
+        failed: /could not be processed/i.test(body),
+      };
+    });
+    if (state.ready) return 'ready';
+    if (state.failed) {
+      const message = await tab.evaluate(() => {
+        const body = document.body.innerText.replace(/\s+/g, ' ');
+        const at = body.search(/could not be processed/i);
+        return body.slice(at, at + 260);
+      });
+      throw new Error(message);
+    }
+    if (Date.now() - started > timeoutMs) {
+      throw new Error(`no result after ${timeoutMs} ms`);
+    }
+    await tab.waitForTimeout(250);
+  }
+}
+
 function stem(name) {
   return name.replace(/\.[^.]+$/, '');
 }
@@ -137,7 +168,7 @@ async function convertOne(tab, filePath, { wantPivot = true } = {}) {
 
   await tab.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
   await tab.setInputFiles('input[type=file]', filePath);
-  await tab.getByText('Your data is ready').waitFor({ timeout: 300_000 });
+  await waitForResult(tab);
   record.processMs = Date.now() - started;
 
   const summary = await tab.locator('main').first().innerText();
@@ -186,11 +217,11 @@ async function runConvert(browser, files) {
   if (first) {
     await tab.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
     await tab.setInputFiles('input[type=file]', first);
-    await tab.getByText('Your data is ready').waitFor({ timeout: 300_000 });
+    await waitForResult(tab);
     const label = await tab.getByRole('button', { name: /^Dates:/ }).first().innerText();
     const t0 = Date.now();
     await tab.getByRole('button', { name: /^Dates:/ }).first().click();
-    await tab.getByText('Your data is ready').waitFor({ timeout: 300_000 });
+    await waitForResult(tab);
     report.dateToggle = { from: label, rerunMs: Date.now() - t0, ok: true };
     console.log(`date toggle: ${label} → re-run in ${report.dateToggle.rerunMs} ms`);
   }
@@ -245,7 +276,7 @@ async function runPrivacy(browser) {
     try {
       await tab.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
       await tab.setInputFiles('input[type=file]', filePath);
-      await tab.getByText('Your data is ready').waitFor({ timeout: 600_000 });
+      await waitForResult(tab, 600_000);
       console.log(`privacy/${type}: converted in ${Date.now() - t0} ms, ${seen.length} requests`);
     } catch (error) {
       console.log(`privacy/${type}: FAILED ${error.message.split('\n')[0]}`);
@@ -273,17 +304,27 @@ async function runPrivacy(browser) {
         const dbs = await indexedDB.databases();
         for (const db of dbs) hits.push(`indexedDB:${db.name || '(unnamed)'}`);
       }
+      const cacheUrls = [];
       if (caches?.keys) {
         for (const cache of await caches.keys()) {
           for (const req of await (await caches.open(cache)).keys()) {
-            hits.push(`cache:${req.url}`);
+            cacheUrls.push(req.url);
           }
         }
       }
-      return hits.map((h) => `${label} ${h}`);
+      // The service worker legitimately caches the app shell and its own
+      // assets; only non-asset entries (or blob:/data: URLs) would suggest file
+      // content was stored.
+      for (const url of cacheUrls) {
+        if (!/^https?:\/\/[^/]+\/(assets\/.+|tess\/.+|tessdata\/.+|sw\.js|og\.png)?$/.test(url)) {
+          hits.push(`cache:${url}`);
+        }
+      }
+      return { hits: hits.map((h) => `${label} ${h}`), cacheEntries: cacheUrls.length };
     }, type);
 
-    if (findings.length > 0) report.storageFindings.push(...findings);
+    report.shellCacheEntries = Math.max(report.shellCacheEntries ?? 0, findings.cacheEntries);
+    if (findings.hits.length > 0) report.storageFindings.push(...findings.hits);
     await new Promise((r) => setTimeout(r, 500));
   }
 
@@ -309,7 +350,7 @@ async function runPerf(browser, filePath) {
   await tab.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
   const t0 = Date.now();
   await tab.setInputFiles('input[type=file]', filePath);
-  await tab.getByText('Your data is ready').waitFor({ timeout: 1_800_000 });
+  await waitForResult(tab, 1_800_000);
   const wallMs = Date.now() - t0;
 
   const perf = await tab.evaluate(() => {

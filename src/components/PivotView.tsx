@@ -535,7 +535,7 @@ export default function PivotView({ dataset, onDownloaded }: PivotViewProps) {
 
       <div className="card overflow-hidden">
         <div className="flex flex-wrap items-center justify-between gap-3 p-3 border-b border-[var(--u2s-border)]">
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <button
               className="btn btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
               onClick={downloadPivotCsv}

@@ -11,6 +11,8 @@ export default tseslint.config(
       'samples/**',
       'public/**',
       'coverage/**',
+      // Local audit output (screenshots, reports, one-off probes) – gitignored.
+      'e2e-out/**',
       // Nested foreign clone sitting in this folder – not part of this project.
       'RowData-Converter/**',
     ],
