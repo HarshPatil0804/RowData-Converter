@@ -257,7 +257,7 @@ export default function App() {
   return (
     <div className="min-h-screen flex flex-col">
       <header className="border-b border-[var(--u2s-border)] bg-white/70 dark:bg-slate-950/70 backdrop-blur sticky top-0 z-20">
-        <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between gap-4">
+        <div className="max-w-6xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-600 text-white font-black text-sm">
               U→S
@@ -269,7 +269,7 @@ export default function App() {
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-2">
             <span className="hidden md:inline-flex badge badge-boolean">offline-ready</span>
             <button
               className="btn btn-secondary"
