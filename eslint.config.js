@@ -35,6 +35,16 @@ export default tseslint.config(
         AbortController: 'readonly',
         __dirname: 'readonly',
         __filename: 'readonly',
+        // Browser globals: the e2e harness runs these snippets inside the page
+        // via page.evaluate(), so they exist only in that context.
+        document: 'readonly',
+        window: 'readonly',
+        localStorage: 'readonly',
+        sessionStorage: 'readonly',
+        indexedDB: 'readonly',
+        caches: 'readonly',
+        performance: 'readonly',
+        PerformanceObserver: 'readonly',
       },
     },
   },

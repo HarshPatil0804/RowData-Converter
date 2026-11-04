@@ -17,7 +17,14 @@ const ROOT = process.cwd();
 const SRC_DIRS = ['src'];
 
 /** Origins that are structural (XML namespaces) rather than network calls. */
-const ALLOWED = [/^https?:\/\/www\.w3\.org\//, /^https?:\/\/schemas\./, /^https?:\/\/localhost/];
+const ALLOWED = [
+  /^https?:\/\/www\.w3\.org\//,
+  /^https?:\/\/schemas\./,
+  /^https?:\/\/localhost/,
+  // Self-referential link/og:image tags in index.html: the page pointing at
+  // its own deployment is not a call out to a third party.
+  /^https:\/\/row-data-converter(-[a-z0-9]+)?\.vercel\.app\//,
+];
 
 function walk(dir: string, out: string[] = []): string[] {
   if (!fs.existsSync(dir)) return out;
@@ -87,10 +94,16 @@ describe('offline: production build', () => {
     const refs = [...html.matchAll(/(?:src|href)="([^"]+)"/g)].map((match) => match[1]);
     expect(refs.length).toBeGreaterThan(0);
 
+    // Only self-origin absolute URLs (canonical, og:image) may be absolute;
+    // everything else must be a relative, shipped asset.
     const external = refs.filter((ref) => /^(https?:)?\/\//i.test(ref));
-    expect(external).toEqual([]);
-    // Every asset resolves inside the build output.
-    for (const ref of refs.filter((ref) => !ref.startsWith('#'))) {
+    const selfOrigin = /^https:\/\/row-data-converter(-[a-z0-9]+)?\.vercel\.app\//;
+    expect(external.filter((ref) => !selfOrigin.test(ref))).toEqual([]);
+    // Every local asset resolves inside the build output.
+    const localRefs = refs.filter(
+      (ref) => !ref.startsWith('#') && !/^(https?:|data:)/i.test(ref),
+    );
+    for (const ref of localRefs) {
       expect(fs.existsSync(path.join(dist, ref.replace(/^\.\//, ''))), ref).toBe(true);
     }
   });
