@@ -13,6 +13,14 @@
  *   npm run verify-live -- --url https://…
  *   npm run verify-live -- --allow-stale     # warn instead of failing on an old
  *                                            # commit (a deploy may still be running)
+ *   npm run verify-live -- --strict-local    # also fail when dist/ on this
+ *                                            # machine differs from live
+ *
+ * The deployed files are always checked against the deployed manifest. A local
+ * `dist/` is compared too, but only as a note: Tailwind serialises computed
+ * colours (lab()) with platform floating-point maths, so a Windows build and
+ * the Linux build Vercel produces can differ by a few last digits while both
+ * are honest builds of the same commit.
  *
  * Exit codes: 0 verified, 1 mismatch, 2 unreachable.
  */
@@ -27,6 +35,7 @@ const flag = (name) => {
   return at === -1 ? null : (args[at + 1] ?? '');
 };
 const allowStale = args.includes('--allow-stale');
+const strictLocal = args.includes('--strict-local');
 const configured = flag('--url') || process.env.LIVE_URL || 'https://row-data-converter.vercel.app';
 const BASE = configured.replace(/\/$/, '');
 
@@ -120,7 +129,9 @@ for (const name of names) {
   if (existsSync(local)) {
     const localDigest = sha256(readFileSync(local));
     if (localDigest !== files[name]) {
-      failures.push(`${name}: dist/ has ${localDigest}, manifest says ${files[name]} (build is stale — run npm run build)`);
+      const message = `${name}: dist/ has ${localDigest}, live manifest says ${files[name]}`;
+      if (strictLocal) failures.push(message);
+      else notes.push(`${message} (local build; the deployed file still matches its manifest)`);
     }
   }
   let live;

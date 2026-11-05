@@ -55,8 +55,12 @@ export default defineConfig({
         // including the workers, so the app opens (and converts) with no
         // network. Written at build time because the hashes only exist now.
         const assetsDir = join('dist', 'assets');
+        // Sorted: readdir order is filesystem-dependent, and an unsorted list
+        // would make two builds of the same commit differ.
         const assets = existsSync(assetsDir)
-          ? readdirSync(assetsDir).map((name) => `./assets/${name}`)
+          ? readdirSync(assetsDir)
+              .sort()
+              .map((name) => `./assets/${name}`)
           : [];
         writeFileSync('dist/assets.json', `${JSON.stringify({ hash: BUILD_HASH, assets })}\n`);
 

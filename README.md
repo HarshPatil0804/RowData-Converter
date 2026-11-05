@@ -458,13 +458,23 @@ dependency or a call site fails CI until a person writes down why it is safe.
 - `version.json` — `{ hash, builtAt, integrity }`, where `hash` is the commit and
   `integrity` is the SHA-256 of `integrity.json`.
 
-Two clean builds of the same commit produce byte-identical `dist/` output except
-`version.json`, whose `builtAt` is the only timestamp in the build. That reproducibility
-is checked in CI on every run.
+Two clean builds of the same commit on the same machine produce byte-identical `dist/`
+output except `version.json`, whose `builtAt` is the only timestamp in the build. That
+reproducibility is checked in CI on every run.
+
+Across machines the output is not bit-identical: Tailwind serialises computed colours
+(`lab(...)`) with platform floating-point arithmetic, so a Windows build and the Linux
+build Vercel produces differ in the last digits of a few colour values — and therefore in
+their content hashes. The integrity chain is unaffected: it is computed per build and
+checked per deployment.
 
 `npm run verify-live` downloads `version.json`, `integrity.json` and every listed file
-from the deployed site, and fails unless the commit matches `HEAD` and every byte matches
-the manifest. CI runs it after each push and retries while the deploy is still rolling out.
+from the deployed site, and fails unless the live commit matches `HEAD` and every live
+byte matches the manifest. A local `dist/` is compared too, but a difference is reported
+as a note (with `--strict-local` it fails): on this machine the build may legitimately
+have been made from the same source by a different platform.
+
+CI runs the same check after each push and retries while the deploy is still rolling out.
 
 ### Maximum privacy mode
 
