@@ -378,7 +378,11 @@ export default function App() {
       </main>
 
       <footer className="border-t border-[var(--u2s-border)] py-4">
-        <p className="muted text-xs text-center">
+        <p className="muted text-xs text-center" data-testid="privacy-notice">
+          Your file is processed on this device and never uploaded. The downloaded file is saved by your browser;
+          delete it from Downloads on a shared computer.
+        </p>
+        <p className="muted text-xs text-center mt-1">
           Runs entirely client-side (Vite · React · TypeScript · Tailwind · Web Workers) — deployable as a static
           site on GitHub Pages or Netlify. build {__BUILD_HASH__}
         </p>

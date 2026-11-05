@@ -9,12 +9,19 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "test": "vitest run",
+    "pretest": "node scripts/generate-hostile.mjs",
     "test:watch": "vitest",
     "typecheck": "tsc -b",
     "lint": "eslint .",
     "samples": "node scripts/generate-samples.mjs",
+    "hostile": "node scripts/generate-hostile.mjs",
     "prepare:assets": "node scripts/copy-ocr-assets.mjs && node scripts/fetch-ocr-data.mjs",
-    "postinstall": "node scripts/copy-ocr-assets.mjs"
+    "postinstall": "node scripts/copy-ocr-assets.mjs",
+    "deps:record": "node scripts/deps-report.mjs --record",
+    "deps:check": "node scripts/deps-report.mjs --check",
+    "scan:dist": "node scripts/scan-dist.mjs",
+    "audit:prod": "npm audit --omit=dev --audit-level=high",
+    "verify-live": "node scripts/verify-live.mjs"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
@@ -29,7 +36,7 @@
     "react-dom": "^19.3.1",
     "tesseract.js": "^7.0.0",
     "wasm-feature-detect": "^1.9.0",
-    "xlsx": "^0.18.5"
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",

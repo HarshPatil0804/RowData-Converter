@@ -45,6 +45,12 @@ export default function ChoiceScreen({
   const [mode, setMode] = useState<Mode>('preview');
   /** R17 – Explode multi-item rows into a second sheet. Default off. */
   const [explode, setExplode] = useState(false);
+  /**
+   * Spreadsheet-safe export: prefix text cells a spreadsheet would evaluate as
+   * a formula with an apostrophe. On by default, because the alternative is
+   * handing a visitor a CSV that runs `=cmd|' /C calc'!A0` when they open it.
+   */
+  const [spreadsheetSafe, setSpreadsheetSafe] = useState(true);
   const active: Dataset = results[activeIndex]?.dataset ?? results[0].dataset;
   const report = active.report;
 
@@ -56,8 +62,11 @@ export default function ChoiceScreen({
   const hasItemCounts = active.columns.some((column) => column.endsWith('_item_count'));
 
   const downloadTabular = (kind: 'csv' | 'xlsx' | 'json') => {
-    if (kind === 'csv') downloadCSV(active.columns, active.rows, 'data.csv');
-    else if (kind === 'json') downloadJSON(active.columns, active.rows, 'data.json');
+    if (kind === 'csv') {
+      downloadCSV(active.columns, active.rows, 'data.csv', { types: active.types, spreadsheetSafe });
+    } else if (kind === 'json') downloadJSON(active.columns, active.rows, 'data.json');
+    // XLSX text is always written as a string cell (never a formula), so the
+    // toggle cannot change this file — nothing to branch on here.
     else downloadXLSX(datasetToSheets(active, { explode }), 'data.xlsx');
     onDownloaded();
   };
@@ -220,6 +229,18 @@ export default function ChoiceScreen({
                   Explode multi-item rows
                 </label>
               )}
+              <label
+                className="btn btn-ghost inline-flex cursor-pointer items-center gap-2"
+                title="A cell starting with = + - @ is a live formula in Excel. Prefixing it with an apostrophe keeps it as text. Trade-off: a text value like +44-1234 or -1 in a text column is exported as '+44-1234 / '-1, so it shows the quote in some viewers. Numbers and dates are never changed."
+              >
+                <input
+                  type="checkbox"
+                  checked={spreadsheetSafe}
+                  onChange={(event) => setSpreadsheetSafe(event.target.checked)}
+                  className="h-4 w-4 accent-indigo-600"
+                />
+                Spreadsheet-safe export
+              </label>
             </div>
             <button className="btn btn-ghost" onClick={() => setMode('preview')}>
               ← Back to preview
@@ -253,7 +274,12 @@ export default function ChoiceScreen({
               ← Back to preview
             </button>
           </div>
-          <PivotView dataset={active} onDownloaded={onDownloaded} />
+          <PivotView
+            dataset={active}
+            onDownloaded={onDownloaded}
+            spreadsheetSafe={spreadsheetSafe}
+            onSpreadsheetSafeChange={setSpreadsheetSafe}
+          />
         </div>
       )}
 

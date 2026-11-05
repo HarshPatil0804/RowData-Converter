@@ -6,6 +6,9 @@ dist/
 coverage/
 *.tsbuildinfo
 e2e-out/
+# Hostile corpus: 52 MB of fixtures, generated deterministically by
+# `npm run hostile` (and by `pretest`). Not committed; CI generates it.
+tests/hostile/
 
 # Logs
 *.log

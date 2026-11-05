@@ -1,15 +1,44 @@
 import * as XLSX from 'xlsx';
-import type { Cell, Dataset, QualityReport, RejectedRow } from '../types';
+import type { Cell, ColumnType, Dataset, QualityReport, RejectedRow } from '../types';
 import { displayCell } from './strings';
+import { isFormulaLike } from './formula';
 import { splitItems } from '../pipeline/rules';
 import type { PivotTable } from './pivot';
 
+export { isFormulaLike, countFormulaLike } from './formula';
+
+export interface CsvOptions {
+  /** Column types, index-aligned. Only `text` columns are neutralised. */
+  types?: ColumnType[];
+  /** Default true. When false the CSV is byte-identical to the data. */
+  spreadsheetSafe?: boolean;
+}
+
+/** A value a spreadsheet reads as a number, not as a formula. */
+const PLAIN_NUMBER = /^[+-]?(\d+(\.\d+)?|\.\d+)([eE][+-]?\d+)?$/;
+
 /** RFC-4180 CSV with BOM (so Excel opens UTF-8 correctly). */
-export function toCSV(columns: string[], rows: Cell[][]): string {
+export function toCSV(columns: string[], rows: Cell[][], options: CsvOptions = {}): string {
   const escape = (value: string): string => (/[",\r\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value);
+  const safe = options.spreadsheetSafe ?? true;
+  const types = options.types;
+  const neutralise = (cell: Cell, column: number): string => {
+    const text = displayCell(cell);
+    if (!safe) return text;
+    // A declared non-text column is never altered: -5 stays -5.
+    if (types) {
+      if (types[column] !== 'text') return text;
+    } else if (typeof cell === 'number' || PLAIN_NUMBER.test(text.trim())) {
+      // No declared types (pivot matrices): a real total, including a negative
+      // one, is left exactly as written; only text that looks like a formula is
+      // neutralised.
+      return text;
+    }
+    return isFormulaLike(text) ? `'${text}` : text;
+  };
   const lines: string[] = [columns.map(escape).join(',')];
   for (const row of rows) {
-    lines.push(row.map((cell) => escape(displayCell(cell))).join(','));
+    lines.push(row.map((cell, column) => escape(neutralise(cell, column))).join(','));
   }
   return `\uFEFF${lines.join('\r\n')}\r\n`;
 }
@@ -25,11 +54,34 @@ export function toJSON(columns: string[], rows: Cell[][]): string {
   return `${JSON.stringify(records, null, 2)}\n`;
 }
 
+/**
+ * A filename that cannot lie about where it came from.
+ *
+ * Path separators are removed (no directory traversal in a download), control
+ * characters, bidi overrides and zero-width joiners are stripped (so
+ * "invoice\u202Ecod.exe" cannot be displayed as "invoicedoc.exe"), characters
+ * Windows rejects become `_`, and the result is length-capped.
+ */
+export function safeDownloadName(name: string): string {
+  const base = typeof name === 'string' && name !== '' ? name : 'download';
+  const withoutPath = base.split(/[\\/]/).pop() ?? 'download';
+  const cleaned = withoutPath
+    .normalize('NFKC')
+    // C0/C1 controls, bidi embedding/override/isolate, zero-width characters.
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069]/g, '')
+    .replace(/[<>:"|?*]/g, '_')
+    .replace(/^[.\s]+/, '')
+    .replace(/[.\s]+$/, '');
+  const capped = cleaned.slice(0, 100).replace(/[.\s]+$/, '');
+  return capped === '' ? 'download' : capped;
+}
+
 export function downloadBlob(blob: Blob, fileName: string): void {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
   anchor.href = url;
-  anchor.download = fileName;
+  anchor.download = safeDownloadName(fileName);
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
@@ -41,8 +93,8 @@ export function downloadText(text: string, fileName: string, mime: string): void
   downloadBlob(new Blob([text], { type: mime }), fileName);
 }
 
-export function downloadCSV(columns: string[], rows: Cell[][], fileName: string): void {
-  downloadText(toCSV(columns, rows), fileName, 'text/csv;charset=utf-8');
+export function downloadCSV(columns: string[], rows: Cell[][], fileName: string, options: CsvOptions = {}): void {
+  downloadText(toCSV(columns, rows, options), fileName, 'text/csv;charset=utf-8');
 }
 
 export function downloadJSON(columns: string[], rows: Cell[][], fileName: string): void {
@@ -141,6 +193,7 @@ export function qualityToTable(report: QualityReport): { columns: string[]; rows
   push('summary', 'outliers_flagged', report.outliersFlagged);
   push('summary', 'ambiguous_dates', report.ambiguousDates);
   push('summary', 'header_detected', report.headerDetected ? 'yes' : 'no');
+  push('summary', 'spreadsheet_safe_cells', report.spreadsheetSafeCells);
 
   for (const column of report.columns) {
     const key = (suffix: string): string => `${column.name}.${suffix}`;

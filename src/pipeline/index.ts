@@ -5,6 +5,7 @@ import { extractSource } from './extract/index';
 import { extractArchive } from './extract/archive';
 import { structureExtraction } from './structure';
 import { cleanTable } from './clean';
+import { LIMITS, assertColumnCount, assertRowCount } from './limits';
 
 export interface ProcessOptions {
   onProgress?: (update: ProgressUpdate) => void;
@@ -20,7 +21,7 @@ export interface ProcessOptions {
   acceptReviews?: readonly string[];
 }
 
-const MAX_ARCHIVE_DEPTH = 2;
+const MAX_ARCHIVE_DEPTH = LIMITS.archiveDepth;
 
 function mimeFor(name: string): string {
   const extension = name.includes('.') ? name.slice(name.lastIndexOf('.') + 1).toLowerCase() : '';
@@ -52,13 +53,23 @@ export async function processBytes(
   const emit = options.onProgress ?? (() => undefined);
   const depth = options.depth ?? 0;
 
+  if (data.byteLength > LIMITS.inputBytes) {
+    throw new Error(
+      `This file is ${(data.byteLength / (1024 * 1024)).toFixed(1)} MB, but the limit is ` +
+        `${LIMITS.inputBytes / (1024 * 1024)} MB. Split it and try again — nothing was uploaded.`,
+    );
+  }
+
   emit({ pct: 3, stage: 'detect', message: `Detecting file type of ${name}` });
   const detection = detectSource(name, mime, data);
   const label = `${detection.kind} · ${detection.reason}`;
 
   if (detection.kind === 'zip') {
     if (depth >= MAX_ARCHIVE_DEPTH) {
-      throw new Error(`Archive nesting deeper than ${MAX_ARCHIVE_DEPTH} is not supported`);
+      throw new Error(
+        `Archives nested more than ${MAX_ARCHIVE_DEPTH} levels deep are not opened. ` +
+          'Extract the innermost archive yourself and drop that instead.',
+      );
     }
     emit({ pct: 8, stage: 'extract', message: 'Opening ZIP archive' });
     const entries = await extractArchive(data);
@@ -113,6 +124,10 @@ export async function processBytes(
 
   emit({ pct: 48, stage: 'structure', message: 'Building rows and columns' });
   const raw = structureExtraction(extraction);
+  // Width and height are checked after structuring, because flattening nested
+  // JSON is what turns three keys into a million columns.
+  assertColumnCount(raw.columns.length);
+  assertRowCount(raw.rows.length);
 
   emit({ pct: 62, stage: 'clean', message: 'Cleaning and typing values' });
   const dataset = cleanTable(raw, name, detection.kind as SourceKind, {

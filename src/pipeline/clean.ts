@@ -15,6 +15,7 @@ import { cellKey, categoryKey, cleanText, displayCell, isNullSentinel, standardi
 import { hasCurrencySign, hasPercentSign, parseNumberValue } from '../lib/numbers';
 import { looksLikeDate, resolveDates, type DateOrderMode, type DayMonthOrder } from '../lib/dates';
 import { generatedNames, padRows } from '../lib/table';
+import { countFormulaLike } from '../lib/formula';
 import { findExportDate, findRowControl, rejectReasons, rejectRows, type HeaderMode } from './reject';
 import { splitColumn } from './packed';
 import { isIdColumn, isMissingIdColumn, normalizeIdColumn, planMissingIds } from './ids';
@@ -890,6 +891,9 @@ export function cleanTable(
     rejectedCount: rejected.length,
     rejectedReasons: rejectReasons(rejected),
     ambiguousDates,
+    // Counted here so the Quality Report can state it without the UI having to
+    // re-scan the table, and so the number does not depend on the toggle.
+    spreadsheetSafeCells: countFormulaLike(rows, types),
     flagCounts,
     mappings,
     reconciliation,

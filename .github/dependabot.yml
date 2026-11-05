@@ -1,0 +1,40 @@
+# Weekly dependency PRs for npm and for the actions used in CI.
+#
+# Deliberately no auto-merge: every bump is a security review, and
+# `security/allowed-deps.json` makes CI fail until a person regenerates it with
+# `npm run deps:record` and reads the diff.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: '/'
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    versioning-strategy: increase
+    commit-message:
+      prefix: deps
+      include: scope
+    groups:
+      # Patch and minor updates travel together so the review is one diff; a
+      # major bump always arrives on its own.
+      npm-minor-patch:
+        applies-to: version-updates
+        update-types: ['minor', 'patch']
+    ignore:
+      # xlsx is a pinned tarball from cdn.sheetjs.com, not the npm registry:
+      # Dependabot cannot resolve it and a silent swap would change the parser.
+      - dependency-name: xlsx
+
+  - package-ecosystem: github-actions
+    directory: '/'
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: ci

@@ -89,7 +89,13 @@ npm run prepare:assets   # copies the engine + downloads tessdata (network neede
 | `npm run typecheck` | TypeScript project build, no emit |
 | `npm run lint` | ESLint over the whole project |
 | `npm run samples` | Regenerate the messy fixtures in `samples/` |
+| `npm run hostile` | Regenerate the hostile corpus in `tests/hostile/` |
 | `npm run prepare:assets` | Refresh OCR engine + language data into `public/` |
+| `npm run deps:check` | Fail if the production dependency tree differs from `security/allowed-deps.json` |
+| `npm run deps:record` | Re-record the reviewed dependency inventory |
+| `npm run audit:prod` | `npm audit --omit=dev --audit-level=high` |
+| `npm run scan:dist` | Fail on any unjustified origin or network call in `dist/` |
+| `npm run verify-live` | Compare the deployed files with `dist/` byte for byte |
 
 ---
 
@@ -322,6 +328,155 @@ Any other static host works the same way: publish `dist/`, no server required.
   setup time to restore language data.
 - **Clear data** in the header drops the loaded results and empties `localStorage`,
   `sessionStorage`, IndexedDB and the Cache API. Only the light/dark preference is kept.
+
+### Threat model
+
+This is a local data tool. It is built so that a hostile *file* is the only thing
+that can attack it, and so that the person using it can verify the privacy claim
+instead of trusting it.
+
+**What it protects against**
+
+| Threat | Defence |
+| --- | --- |
+| The file being uploaded to a server | There is no server. The app is static files; every parser runs in this tab or in a Web Worker, and `connect-src 'self'` plus the dist scan (`npm run scan:dist`) refuse and detect any call out. |
+| A file executing script in the page (XSS via CSV/XLSX/HTML/SVG/DOCX) | Cell values are rendered as React text nodes only; the project bans `dangerouslySetInnerHTML`, `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `document.write`, `eval`, `new Function` and `javascript:` URLs in ESLint, and the CSP additionally requires Trusted Types. `tests/hostile-browser.test.ts` uploads 30 hostile files to the built app in Chrome with a canary: no script may run. |
+| A formula in a cell running in Excel / Sheets | Text columns are neutralised on export (`'=`, `'+`, `'-`, `'@`, tab, CR) unless *Spreadsheet-safe export* is turned off; XLSX text is written as string cells, never as formulas. |
+| Zip bombs, billion laughs, XXE, 10 000-deep nesting, 50 MB lines, 1 M columns | Explicit limits, checked from the file header where possible, with a readable message instead of a frozen tab — see [Limits](#limits). |
+| ReDoS in the cleaning heuristics | The regex-driven heuristics only run on text under `heuristicChars` (2 MB) and use no nested quantifiers. |
+| A poisoned dependency or a modified deploy | `npm ci --ignore-scripts`, a reviewed production inventory, an audit gate, a pinned-action CI, and a published SHA-256 manifest of every deployed file (`npm run verify-live`). |
+| A filename that lies about itself (`invoice\u202Ecod.exe`) | Download names are NFKC-normalised, stripped of path separators, control characters, bidi overrides and zero-width characters, and length-capped. |
+
+**What it cannot protect against**
+
+- **A compromised device.** Malware, a malicious browser extension, or someone with
+  access to the machine can read the file, the tab, and the download.
+- **The downloaded file itself.** Once you download a CSV or XLSX, the spreadsheet
+  application that opens it is outside this app's control. That is why the export
+  neutralises formulas and why the in-app notice tells you to delete the download on a
+  shared computer.
+- **A compromised or malicious deployment.** The integrity manifest proves the files
+  are the ones this repository built; it cannot prove the repository is honest. Build
+  it yourself if that matters — see [Maximum privacy mode](#maximum-privacy-mode).
+- **Denial of service by the operating system.** Limits stop a browser tab from
+  freezing; they do not stop a 200 MB file from being slow to read off disk.
+- **Your own typing.** Anything you paste into the app is in this tab, and in the
+  clipboard history of the machine.
+
+### Limits
+
+Measured from the file itself where possible (ZIP central directory, image header)
+before any expensive work starts. Each limit throws a message written for a person,
+and the app shows it verbatim. The numbers live in one place, `src/pipeline/limits.ts`.
+
+| Limit | Value | Where |
+| --- | --- | --- |
+| One file | 200 MB | UI + pipeline |
+| Uncompressed archive contents (all members) | 300 MB | `extract/archive.ts` |
+| Archive compression ratio | 200:1 | `extract/archive.ts` |
+| Files in one archive | 2 000 | `extract/archive.ts` |
+| Archives inside archives | 3 | `extract/archive.ts` |
+| JSON/object nesting depth | 256 | `limits.ts` (`maxJsonDepth`) |
+| XML element depth | 256 | `limits.ts` (`maxXmlDepth`) |
+| Longest single line | 2 MB | `limits.ts` (`assertLineLengths`) |
+| Columns | 4 096 | `limits.ts` |
+| Rows | 2 000 000 | `limits.ts` |
+| Image pixels before OCR | 40 MP | `limits.ts` (`imageSize`, header only) |
+| Text handed to the regex heuristics | 2 MB | `limits.ts` |
+| DOCTYPE / entity declarations | refused outright | `limits.ts` (`assertNoDoctypeEntities`) |
+
+The corpus that exercises these lives in `tests/hostile/` and is regenerated by
+`npm run hostile` (no downloads): XSS payloads in every text format, prototype-polluting
+keys, XXE and billion-laughs XML, a zip bomb, 10 000 archive entries, a deeply nested
+archive, 10 000-deep JSON and XML, a 50 MB single line, a 1 M-column CSV, ReDoS strings,
+a 100 MP image, and RTL/control-character filenames.
+
+### Rendering safety
+
+There is no raw-HTML sink in `src/` — grep for `dangerouslySetInnerHTML`, `innerHTML`,
+`outerHTML`, `insertAdjacentHTML`, `document.write`, `eval`, `new Function` or `srcdoc`
+and the only hits are the lint rules that ban them. File text reaches the DOM as a React
+text node, so markup in a cell is shown, never parsed. The lint rules are errors, so CI
+fails on the first reintroduction.
+
+The CSP in `vercel.json` sends `require-trusted-types-for 'script'; trusted-types u2s-worker`
+with the **document** (and every path the SPA rewrite can serve). It was kept only after the
+full browser suite passed with it. Turning it on initially broke the app in a way worth
+recording: `new Worker(url)` and `serviceWorker.register(url)` refuse a plain string under
+this policy, so both now mint their URL through one narrow policy (`src/lib/trusted.ts`)
+that only produces same-origin `.js`/`.mjs` URLs. The conversion worker is emitted with
+Vite's `?worker&url` so its filename is known before the policy mints it.
+
+The two engine paths (`assets/`, `tess/`, `tessdata/`) are served the same CSP **without**
+the Trusted Types directives. That is deliberate and is the one place the policy cannot
+reach: `tess/worker.min.js` is a third-party worker script that calls `importScripts()`
+from a plain string inside its *own* global, where no policy of ours exists — and the
+engine owns that code. The document, which is where an injected string would become markup
+or a script, is fully covered; a script URL inside the OCR engine is already constrained by
+`script-src 'self'` and `worker-src 'self' blob:`.
+
+One consequence for the engines: tesseract.js normally re-wraps its worker script in a
+`blob:` URL; `workerBlobURL: false` uses the same-origin, service-worker-cached
+`/tess/worker.min.js` instead.
+
+### Spreadsheet-safe export
+
+CSV and XLSX exports neutralise spreadsheet formulas by default: a cell in a **text**
+column that starts with `=`, `+`, `-`, `@`, tab or CR is prefixed with a single quote.
+Numeric and date columns are left untouched, so `-2+3` in an amount column stays a
+number. XLSX text is always written as a string cell, never as a formula, so
+`=HYPERLINK("https://x","y")`, `=cmd|' /C calc'!A0`, `@SUM(1+1)`, `+1+1` and `-2+3` all
+arrive as literal text. The Quality Report states how many cells were neutralised.
+
+**Trade-off:** a text cell that genuinely begins with `-` or `+` gains a leading quote in
+Excel-compatible tools. Turn *Spreadsheet-safe export* off in the output panel when the
+file is not going to a spreadsheet.
+
+### Dependency and supply-chain gates
+
+| Gate | Command | What it proves |
+| --- | --- | --- |
+| Install without scripts | `npm ci --ignore-scripts` | no dependency's install hook is needed to build or test |
+| Reviewed inventory | `npm run deps:check` | every production package and version matches `security/allowed-deps.json`, and every install script is listed |
+| Audit | `npm run audit:prod` | no high or critical advisory in production dependencies |
+| Bundle scan | `npm run scan:dist` | every origin and every `fetch`/XHR/`sendBeacon`/`WebSocket`/`EventSource` in `dist/` is justified in `security/dist-baseline.json` |
+
+The production tree is 64 packages (13 direct, 51 transitive) and exactly one runtime
+package declares an install script (`tesseract.js`'s `opencollective-postinstall`, which is
+never needed: the OCR assets are committed under `public/`). `npm audit --omit=dev` reports
+one **moderate** advisory (`fast-xml-parser` XMLBuilder comment injection, GHSA-gh4j-gqv2-49f6);
+the app only *parses* XML and never builds it, and the audit gate fails on high and critical.
+
+`security/dist-baseline.json` rewrites the review, not the other way round: adding a
+dependency or a call site fails CI until a person writes down why it is safe.
+
+### Integrity and the live check
+
+`npm run build` writes two extra files into `dist/`:
+
+- `integrity.json` — SHA-256 of every shipped file (sorted, stable);
+- `version.json` — `{ hash, builtAt, integrity }`, where `hash` is the commit and
+  `integrity` is the SHA-256 of `integrity.json`.
+
+Two clean builds of the same commit produce byte-identical `dist/` output except
+`version.json`, whose `builtAt` is the only timestamp in the build. That reproducibility
+is checked in CI on every run.
+
+`npm run verify-live` downloads `version.json`, `integrity.json` and every listed file
+from the deployed site, and fails unless the commit matches `HEAD` and every byte matches
+the manifest. CI runs it after each push and retries while the deploy is still rolling out.
+
+### Maximum privacy mode
+
+1. `git clone <this repository>` and `cd` into it.
+2. `npm ci`
+3. `npm run build`
+4. `npm run preview`
+5. **Disconnect the network.**
+
+The page keeps working: nothing it needs is on the internet. No server, no account, no
+analytics. Every claim in this README can then be checked against the files on your disk
+without a single request leaving the machine.
 
 ### Service worker policy
 

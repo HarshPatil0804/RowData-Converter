@@ -1,4 +1,8 @@
+// `?worker&url` lets Vite bundle the worker and hand back its final URL. The
+// URL is then minted through the Trusted Types policy, which the CSP requires.
+import workerScriptUrl from './pipeline.worker.ts?worker&url';
 import type { DateOrderMode } from '../lib/dates';
+import { trustedScriptUrl } from '../lib/trusted';
 import type { Cell, Dataset, ProgressUpdate } from '../types';
 
 export interface ProcessJob {
@@ -35,7 +39,8 @@ export class PipelineClient {
   private pending = new Map<number, Pending>();
 
   constructor() {
-    this.worker = new Worker(new URL('./pipeline.worker.ts', import.meta.url), { type: 'module' });
+    // Trusted Types: the CSP requires a TrustedScriptURL here, not a string.
+    this.worker = new Worker(trustedScriptUrl(workerScriptUrl), { type: 'module' });
     this.worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
       const message = event.data;
       const entry = this.pending.get(message.id);

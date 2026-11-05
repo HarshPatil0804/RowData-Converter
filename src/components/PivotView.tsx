@@ -22,6 +22,9 @@ import { pivotToMatrix, pivotToSheets, downloadCSV, downloadXLSX } from '../lib/
 export interface PivotViewProps {
   dataset: Dataset;
   onDownloaded: () => void;
+  /** Shared with the tabular view: one switch for every CSV this screen writes. */
+  spreadsheetSafe: boolean;
+  onSpreadsheetSafeChange: (value: boolean) => void;
 }
 
 type Zone = 'rows' | 'cols' | 'values';
@@ -223,7 +226,12 @@ function PivotGrid({
   );
 }
 
-export default function PivotView({ dataset, onDownloaded }: PivotViewProps) {
+export default function PivotView({
+  dataset,
+  onDownloaded,
+  spreadsheetSafe,
+  onSpreadsheetSafeChange,
+}: PivotViewProps) {
   const [config, setConfig] = useState<PivotConfig>(() => suggestPivot(dataset));
   const [showZero, setShowZero] = useState(false); // P3, default off
   const [includeTotals, setIncludeTotals] = useState(true); // P5 CSV option, default on
@@ -312,7 +320,10 @@ export default function PivotView({ dataset, onDownloaded }: PivotViewProps) {
     }
     setDownloadError(null);
     const { columns, rows } = pivotToMatrix(pivot, matrixOptions);
-    downloadCSV(columns, rows, 'pivot.csv');
+    // Pivot cells mix labels and totals, so no column type is declared: the
+    // writer falls back to "text unless the cell is a plain number", which
+    // leaves every real total (including negatives) untouched.
+    downloadCSV(columns, rows, 'pivot.csv', { spreadsheetSafe });
     onDownloaded();
   };
 
@@ -550,6 +561,18 @@ export default function PivotView({ dataset, onDownloaded }: PivotViewProps) {
             >
               Download XLSX
             </button>
+            <label
+              className="btn btn-ghost inline-flex cursor-pointer items-center gap-2"
+              title="A cell starting with = + - @ is a live formula in Excel. Prefixing it with an apostrophe keeps it as text. Trade-off: a label like -pending shows the quote in some viewers. Numeric totals are never changed."
+            >
+              <input
+                type="checkbox"
+                checked={spreadsheetSafe}
+                onChange={(event) => onSpreadsheetSafeChange(event.target.checked)}
+                className="h-4 w-4 accent-indigo-600"
+              />
+              Spreadsheet-safe export
+            </label>
           </div>
           <span className="muted text-xs">
             {pivot.rowLabels.length.toLocaleString()} × {pivot.columns.length || 1} pivot grid

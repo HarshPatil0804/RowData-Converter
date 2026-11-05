@@ -5,12 +5,24 @@ on:
     branches: [main]
   pull_request:
 
+# Read-only everywhere: no workflow here writes to the repository, and no
+# `pull_request_target` is used, so a fork cannot reach secrets or a writable
+# token.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   checks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      # Actions are pinned to full commit SHAs: a moved tag cannot change what
+      # runs here. The comment keeps the readable version next to the SHA.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
@@ -20,62 +32,133 @@ jobs:
       # Build first: the browser-parity and service-worker suites drive the
       # production bundle in real Chrome, so dist/ must exist before `npm test`.
       - run: npm run build
-      - name: Check build stamp landed in dist
+      - name: Check build stamp and integrity chain landed in dist
         run: |
+          set -euo pipefail
           test -f dist/version.json
+          test -f dist/integrity.json
           cat dist/version.json
           grep -q "<meta name=\"build\"" dist/index.html
+          node -e '
+            const fs = require("fs");
+            const crypto = require("crypto");
+            const version = JSON.parse(fs.readFileSync("dist/version.json", "utf8"));
+            const integrityBytes = fs.readFileSync("dist/integrity.json");
+            const digest = crypto.createHash("sha256").update(integrityBytes).digest("hex");
+            if (version.integrity !== digest) {
+              throw new Error(`version.json integrity ${version.integrity} != sha256(integrity.json) ${digest}`);
+            }
+            const manifest = JSON.parse(integrityBytes.toString("utf8"));
+            const listed = new Set(Object.keys(manifest.files));
+            const walk = (dir, prefix = "") =>
+              fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) =>
+                entry.isDirectory()
+                  ? walk(`${dir}/${entry.name}`, `${prefix}${entry.name}/`)
+                  : [`${prefix}${entry.name}`]);
+            const actual = walk("dist").filter((name) => name !== "version.json" && name !== "integrity.json");
+            for (const name of actual) {
+              if (!listed.has(name)) throw new Error(`${name} is missing from integrity.json`);
+              const sha = crypto.createHash("sha256").update(fs.readFileSync(`dist/${name}`)).digest("hex");
+              if (manifest.files[name] !== sha) throw new Error(`${name} hash does not match integrity.json`);
+            }
+            const expected = process.env.GITHUB_SHA ? process.env.GITHUB_SHA.slice(0, 7) : version.hash;
+            if (version.hash !== expected) {
+              throw new Error(`dist was built from ${version.hash}, but CI is building ${expected}`);
+            }
+            console.log(`integrity OK: ${actual.length} files, commit ${version.hash}`);
+          '
+      - name: Two clean builds of the same commit are identical (except version.json)
+        run: |
+          set -euo pipefail
+          # version.json is the one file allowed to differ: it carries builtAt.
+          # Everything else must be byte-identical, which is what makes the
+          # integrity hashes in a deploy comparable across machines.
+          rm -rf /tmp/dist-first
+          cp -r dist /tmp/dist-first
+          rm -rf dist
+          npm run build
+          diff -r --exclude=version.json /tmp/dist-first dist
+          echo "REPRODUCIBLE: dist/ matches the first build byte for byte (version.json excluded)"
       - run: npm test
+
+  # Tasks 1–5 of the security brief, as a gate: hostile corpus, hostile corpus in
+  # a real browser, rendering-safety lint, spreadsheet-safe export, dependency
+  # inventory, audit, and the dist network scan. A violation fails the build.
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      # Install scripts are disabled on purpose: a package's postinstall must
+      # never be required for this project to build or test.
+      - name: Install without running any dependency script
+        run: npm ci --ignore-scripts
+      - name: OCR assets present without postinstall
+        run: |
+          set -euo pipefail
+          test -f public/tess/worker.min.js
+          test -f public/tessdata/eng.traineddata.gz
+      - name: Every runtime dependency is reviewed
+        run: npm run deps:check
+      - name: No high-severity advisory in production dependencies
+        run: npm run audit:prod
+      - name: Rendering-safety lint rules (eval, Function, innerHTML, dangerouslySetInnerHTML)
+        run: npm run lint
+      - name: Generate the hostile corpus
+        run: npm run hostile
+      - run: npm run build
+      - name: Nothing in dist/ talks to a third party
+        run: npm run scan:dist
+      - name: Hostile files, in Node and in the built app
+        run: npx vitest run tests/hostile.test.ts tests/export-safety.test.ts
+      - name: Hostile files and the offline guarantee in real Chrome
+        run: npx vitest run tests/hostile-browser.test.ts tests/offline-browser.test.ts
 
   # Verifies the deployed site. Needs the repository variable LIVE_URL
   # (Settings → Secrets and variables → Actions → Variables → New variable).
   # When it is missing the job still runs so it can say so out loud: a silent
   # skip looks exactly like a passing deploy check.
   verify-deploy:
-    needs: checks
+    needs: [checks, security]
     runs-on: ubuntu-latest
     steps:
       - name: Announce a missing LIVE_URL
         if: ${{ vars.LIVE_URL == '' }}
         run: |
-          echo "::warning title=LIVE_URL is not set::The live-hash gate and the Playwright smoke test did NOT run. Add a repository variable LIVE_URL = https://row-data-converter.vercel.app (Settings → Secrets and variables → Actions → Variables) to enable them."
-      - uses: actions/checkout@v4
+          echo "::warning title=LIVE_URL is not set::The live-hash gate, the file-integrity check and the Playwright smoke test did NOT run. Add a repository variable LIVE_URL = https://row-data-converter.vercel.app (Settings → Secrets and variables → Actions → Variables) to enable them."
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         if: ${{ vars.LIVE_URL != '' }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         if: ${{ vars.LIVE_URL != '' }}
         with:
           node-version: 22
           cache: npm
       - run: npm ci
         if: ${{ vars.LIVE_URL != '' }}
-      - name: Fail when the live version.json hash differs from the pushed commit
+      - run: npm run build
+        if: ${{ vars.LIVE_URL != '' }}
+      - name: Fail when the live build is not this commit, or any live file differs
         if: ${{ vars.LIVE_URL != '' }}
         env:
           LIVE_URL: ${{ vars.LIVE_URL }}
         run: |
-          expected=$(git rev-parse --short HEAD)
-          live=""
-          body=""
           for i in $(seq 1 30); do
-            body=$(curl -fsS "$LIVE_URL/version.json" || true)
-            live=$(printf '%s' "$body" | sed -n 's/.*"hash"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
-            echo "attempt $i: live='$live' expected='$expected' body='$body'"
-            if [ "$live" = "$expected" ]; then
-              echo "MATCH: live version.json equals pushed commit $expected"
+            if node scripts/verify-live.mjs --url "$LIVE_URL"; then
               exit 0
             fi
+            echo "attempt $i: not the pushed build yet; a Vercel deploy may still be running"
             sleep 20
           done
-          echo "MISMATCH: live='$live' expected='$expected'"
+          echo "MISMATCH: the live site still does not match $GITHUB_SHA"
           echo "Check the Vercel dashboard: Build logs, Production branch setting, Domains."
           exit 1
 
       # Drives the deployed site in real Chrome: uploads samples, waits for the
       # result, downloads the CSV, and fails on any console error, failed
       # request or non-2xx response.
-      # Uploads real samples to the deployed site and asserts row counts and
-      # specific cells against e2e/expected.json, so a regression in the live
-      # build fails here instead of being noticed by a visitor.
       - name: Playwright content test on the live site
         if: ${{ vars.LIVE_URL != '' }}
         env:

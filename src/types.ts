@@ -158,6 +158,8 @@ export interface FileReport {
   mappings: ValueMapping[];
   /** R10 – parsed vs reported total. */
   reconciliation: Reconciliation | null;
+  /** Text cells a spreadsheet would treat as a formula (exported prefixed). */
+  spreadsheetSafeCells: number;
   /** R15 – row-count control line vs the number of clean rows. */
   rowControl: RowControl | null;
   /** Date found in the file's export/generated metadata line. */

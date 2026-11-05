@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "generatedBy": "node scripts/scan-dist.mjs --update (reasons are written by hand and never overwritten)",
+  "domains": {
+    "http://$": "Template literal inside a URL-normalising helper (`http://${host}`), not a literal request.",
+    "http://docs.oasis-open.org": "ODF/OpenDocument XML namespace and relation-type URIs read from .ods/.fods files.",
+    "http://example.com": "Placeholder base used by a URL parser when no base is supplied; never fetched.",
+    "http://localhost:3000": "npm `scripts` metadata from the bundled tesseract.js package.json, shown only if printed.",
+    "http://macVmlSchemaUri": "Key of SheetJS's VML namespace table (an object key, not a URL).",
+    "http://ns.adobe.com": "XMP/XFA namespace and element names in PDF documents (pdf.js constants).",
+    "http://openoffice.org": "OpenOffice XML namespace URIs in ODF files.",
+    "http://purl.oclc.org": "Dublin Core / ODF metadata namespaces.",
+    "http://purl.org": "Dublin Core metadata namespaces (dc:, dcterms:).",
+    "http://schemas.microsoft.com": "Office (Word/Excel/PowerPoint) XML namespace URIs.",
+    "http://schemas.openxmlformats.org": "OOXML namespace and relationship-type URIs — the bulk of .docx/.xlsx/.pptx parsing.",
+    "http://schemas.zwobble.org": "Mammoth's internal `m:oMath` namespace URI.",
+    "http://sheetjs.com": "SheetJS namespace/format-identifier table.",
+    "http://sheetjs.openxmlformats.org": "SheetJS's own OOXML extension namespace.",
+    "http://stuartk.com": "Property name in SheetJS's format table (`stuartk.com` comment/format id).",
+    "http://www.apache.org": "Apache-licensed PDF font/licence identifier string in pdf.js.",
+    "http://www.w3.org": "W3C XML/HTML/SVG/XLink namespace URIs, including the inline SVG data URI in index.html.",
+    "http://www.xfa.org": "XFA namespace in PDF forms (pdf.js constants).",
+    "https://cdn.jsdelivr.net": "tesseract.js's *default* workerPath/corePath/langPath. Every one is overridden in src/pipeline/extract/image.ts with a same-origin /tess or /tessdata path, so no request can reach jsDelivr.",
+    "https://foo.bar": "Base URL in a try/catch URL-parse helper; a parser input, never fetched.",
+    "https://github.com": "Issue/discussion links inside bundled error messages and package metadata.",
+    "https://opencollective.com": "`opencollective-postinstall` message text from tesseract.js; only runs at npm install.",
+    "https://raw.github.com": "Repository link in bundled package metadata.",
+    "https://react.dev": "React error-message links (development warnings).",
+    "https://rolldown.rs": "Bundler error-message link for CommonJS interop.",
+    "https://row-data-converter.vercel.app": "This site's own canonical/og:image URLs in index.html — a self-reference, not a third party.",
+    "https://sheetjs.com": "SheetJS format-table identifier string.",
+    "https://stuk.github.io": "JSZip error-message link explaining a corrupt archive.",
+    "https://tailwindcss.com": "Tailwind licence comment in the built CSS."
+  },
+  "calls": {
+    "assets/index.js": {
+      "fetch(": 1
+    },
+    "assets/pdf.worker.min.mjs": {
+      "XMLHttpRequest": 1,
+      "fetch(": 33
+    },
+    "assets/pipeline.worker.js": {
+      "XMLHttpRequest": 4,
+      "fetch(": 9
+    },
+    "sw.js": {
+      "fetch(": 3
+    },
+    "tess/tesseract-core-lstm.wasm.js": {
+      "XMLHttpRequest": 6,
+      "fetch(": 1
+    },
+    "tess/tesseract-core-simd-lstm.wasm.js": {
+      "XMLHttpRequest": 6,
+      "fetch(": 1
+    }
+  },
+  "callReasons": {
+    "assets/index.js": "One fetch: the service-worker update check / asset list read, same origin only (CSP connect-src 'self').",
+    "assets/pdf.worker.min.mjs": "pdf.js loads its cMap and standard-font files with fetch/XHR; the app only ever passes same-origin /assets paths, and CSP connect-src 'self' blocks anything else.",
+    "assets/pipeline.worker.js": "tesseract.js and pdf.js inside the conversion worker: same-origin reads of /tessdata and the PDF CMaps. The app overrides every library default URL with an origin-relative path.",
+    "sw.js": "The service worker's own cache fills: ./assets.json (precache list) and the requests it re-fetches. Everything is relative to the app origin.",
+    "tess/tesseract-core-lstm.wasm.js": "Emscripten's wasm loader fetching its sibling binary; only same-origin paths are passed by tesseract.js.",
+    "tess/tesseract-core-simd-lstm.wasm.js": "Same Emscripten loader, SIMD build."
+  }
+}

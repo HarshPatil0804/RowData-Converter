@@ -32,6 +32,11 @@ export default function QualityPanel({ dataset, onDownloaded }: QualityPanelProp
       hint: 'day/month order unproven for their pattern — flip the date toggle to re-read them (R3)',
     },
     {
+      label: 'Cells neutralised on export',
+      value: report.spreadsheetSafeCells.toLocaleString(),
+      hint: 'text cells starting with = + - @ that a spreadsheet would run as a formula — the CSV export prefixes them with an apostrophe unless you switch that off',
+    },
+    {
       label: 'Nulls fixed',
       value: report.nullsFixed.toLocaleString(),
       hint: 'sentinel values ("N/A", "-", "null"…) converted to real nulls',

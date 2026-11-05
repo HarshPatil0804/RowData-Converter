@@ -48,6 +48,7 @@ async function buildWorkerOptions(onProgress: ProgressFn) {
       workerPath: `${base}/node_modules/tesseract.js/src/worker-script/node/index.js`,
       gzip: true,
       cacheMethod: 'none',
+
     } as Record<string, unknown>;
   }
 
@@ -61,6 +62,10 @@ async function buildWorkerOptions(onProgress: ProgressFn) {
     langPath: `${origin}/tessdata`,
     gzip: true,
     cacheMethod: 'none',
+    // tesseract.js normally fetches the worker script and re-wraps it in a
+    // blob: URL. The same-origin, service-worker-cached workerPath is just as
+    // good and needs no blob, so keep the plain path.
+    workerBlobURL: false,
   } as Record<string, unknown>;
 }
 

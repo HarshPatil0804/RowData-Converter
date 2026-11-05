@@ -24,6 +24,11 @@ const ALLOWED = [
   // Self-referential link/og:image tags in index.html: the page pointing at
   // its own deployment is not a call out to a third party.
   /^https:\/\/row-data-converter(-[a-z0-9]+)?\.vercel\.app\//,
+  // The SheetJS tarball in package.json: a *build-time* dependency source
+  // (npm ci fetches it), never reachable from the browser. That the bundle
+  // contains no such URL is proven separately by the dist network scan in
+  // tests/dist-scan.test.ts.
+  /^https:\/\/cdn\.sheetjs\.com\//,
 ];
 
 function walk(dir: string, out: string[] = []): string[] {
