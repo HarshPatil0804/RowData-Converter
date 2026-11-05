@@ -24,7 +24,6 @@
       "headers": [{ "key": "Cache-Control", "value": "no-store" }]
     },
     {
-      "comment": "The document and everything the SPA rewrite can serve: full policy, including Trusted Types. Engine files (assets/, tess/, tessdata/) are excluded below, because a third-party worker script calls importScripts() from a plain string inside its own global, where no policy of ours exists.",
       "source": "/((?!assets/|tess/|tessdata/|sw\\.js$|assets\\.json$|version\\.json$|integrity\\.json$).*)",
       "headers": [
         {
@@ -41,21 +40,16 @@
       ]
     },
     {
-      "comment": "Engine files only: identical policy minus the Trusted Types directives. The two sources are mutually exclusive so exactly one CSP is sent per response.",
-      "source": "/((?:assets/|tess/|tessdata/).*|sw\\.js|assets\\.json|version\\.json|integrity\\.json)",
-      "headers": [
-        {
-          "key": "Content-Security-Policy",
-          "value": "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' blob: data:; connect-src 'self'; manifest-src 'self'"
-        },
-        { "key": "Referrer-Policy", "value": "no-referrer" },
-        { "key": "X-Content-Type-Options", "value": "nosniff" },
-        {
-          "key": "Permissions-Policy",
-          "value": "camera=(), microphone=(), geolocation=(), payment=(), usb=(), magnetometer=(), gyroscope=()"
-        },
-        { "key": "X-Frame-Options", "value": "DENY" }
-      ]
+      "source": "/(assets/.*)",
+      "headers": [{ "key": "Content-Security-Policy", "value": "default-src 'self'; object-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:" }]
+    },
+    {
+      "source": "/(tess/.*)",
+      "headers": [{ "key": "Content-Security-Policy", "value": "default-src 'self'; object-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self'" }]
+    },
+    {
+      "source": "/(tessdata/.*)",
+      "headers": [{ "key": "Content-Security-Policy", "value": "default-src 'self'; object-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self'" }]
     }
   ]
 }
