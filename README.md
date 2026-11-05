@@ -407,12 +407,12 @@ this policy, so both now mint their URL through one narrow policy (`src/lib/trus
 that only produces same-origin `.js`/`.mjs` URLs. The conversion worker is emitted with
 Vite's `?worker&url` so its filename is known before the policy mints it.
 
-The two engine paths (`assets/`, `tess/`, `tessdata/`) are served the same CSP **without**
-the Trusted Types directives. That is deliberate and is the one place the policy cannot
-reach: `tess/worker.min.js` is a third-party worker script that calls `importScripts()`
-from a plain string inside its *own* global, where no policy of ours exists — and the
-engine owns that code. The document, which is where an injected string would become markup
-or a script, is fully covered; a script URL inside the OCR engine is already constrained by
+The engine paths (`assets/`, `tess/`, `tessdata/`) are served a CSP **without** the Trusted
+Types directives. They are scripts and wasm, not documents, and they are the one place the
+policy cannot reach: `tess/worker.min.js` is a third-party worker script that calls
+`importScripts()` from a plain string inside its *own* global, where no policy of ours
+exists. The document, which is where an injected string would become markup or a script, is
+fully covered; a script URL inside the OCR engine is already constrained by
 `script-src 'self'` and `worker-src 'self' blob:`.
 
 One consequence for the engines: tesseract.js normally re-wraps its worker script in a
