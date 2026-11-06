@@ -189,13 +189,17 @@ Downloads are generated entirely in the browser with `Blob` + `URL.createObjectU
 npm test
 ```
 
-Eleven suites, 70 tests:
+Eighteen suites, 127 tests:
 
 | Suite | Covers |
 | --- | --- |
 | `tests/hospital.test.ts` | **Acceptance suite** — R1–R10 and P1–P9 against `samples/hospital/raw.csv` |
 | `tests/parity.test.ts` | **Production bundle parity** — every sample through `vite preview` in headless Chromium, CSV compared byte for byte with the Node pipeline |
-| `tests/sw-update.test.ts` | Service worker: offline fallback works, a new build appears after one reload, the cache holds app assets only |
+| `tests/privacy.test.ts` | Privacy charter, measured in Chrome: zero cookies/storage/caches/workers after a full session (A), every request a same-origin `GET` with no body and no beacon/WebSocket/EventSource (E), a canary from a cell and a filename appearing only in the DOM and the download (F) |
+| `tests/sw-cleanup.test.ts` | A browser still holding the old `91ed3d7` worker is cleaned on the next load: registrations, caches and preferences gone |
+| `tests/offline-browser.test.ts` | Every sample converts with the network switched off in an already-open page: no request fails, and every request the page still makes is a same-origin asset answered from the browser's cache |
+| `tests/static-hosting.test.ts` | No `api/`, no `functions/`, no analytics or telemetry package, `installCommand` set, and every file in `dist/` has a static file type |
+| `tests/determinism.test.ts` | Byte-identical CSV/XLSX/report/pivot output across four time zones and four locales |
 | `tests/date-toggle.test.ts` | R3 toggle: ambiguous dates really change, dates proven by the data do not |
 | `tests/pipeline.test.ts` | Every sample file converts to a clean table automatically |
 | `tests/ocr.test.ts` | Scanned-image OCR → reconstructed table |
@@ -288,12 +292,32 @@ in the Actions summary instead of looking like a pass.
 The live site deploys from `main` with `vercel.json`:
 
 - **Build command:** `npm run build` · **Output:** `dist` · **Node:** 22 (`engines.node`)
-- SPA fallback rewrite to `/index.html`, except `/version.json`, `/sw.js`, `/assets/`, `/tess/`,
-  `/tessdata/`
-- `/version.json` served as JSON with `Cache-Control: no-store`
-- CSP (`default-src 'self'`), `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff`,
-  `X-Frame-Options: DENY`, and a `Permissions-Policy` that denies camera, microphone and
-  geolocation
+- **Install command:** `npm ci --ignore-scripts` — a dependency's install hook cannot run
+  during a deploy. **Build command:** `npm run build` · **Output:** `dist` · **Node:** 22
+  (`engines.node`)
+- SPA fallback rewrite to `/index.html`, except `/version.json`, `/integrity.json`,
+  `/robots.txt`, `/sw.js`, `/assets/`, `/tess/`, `/tessdata/`
+- `/version.json` and `/integrity.json` served as JSON with `Cache-Control: no-store`;
+  `/sw.js` with `no-store` so the tombstone below is fetched
+- `/assets/` served `immutable` for a year (the names are content-hashed), `/tess/` and
+  `/tessdata/` for a year. This is what replaces the old worker if the network goes away
+  mid-session: pdf.js's worker script and the OCR engine are re-requested by a fresh engine
+  worker on each conversion, and the browser answers them from its HTTP cache.
+- CSP `default-src 'none'` with explicit allows (`script-src 'self' 'wasm-unsafe-eval'`,
+  `style-src 'self'`, `img-src 'self' data: blob:`, `font-src 'self'`, `media-src 'self'
+  data: blob:`, `worker-src 'self' blob:`, `connect-src 'self'`, `manifest-src 'self'`),
+  `form-action 'none'`, `base-uri 'none'`, `frame-ancestors 'none'`, `object-src 'none'`,
+  and Trusted Types (`require-trusted-types-for 'script'; trusted-types u2s-worker`).
+  `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
+  and a `Permissions-Policy` that denies camera, microphone and geolocation
+
+Why those are the only loose directives: `'wasm-unsafe-eval'` is required by the vendored
+Tesseract engine; `blob:` is how the app hands a `File` to its worker and how a download is
+built and revoked; `data:` covers the inline favicon; `blob:` in `worker-src` is the
+module-worker constructor. `style-src` is self-only rather than nonce-based because React
+writes element styles through CSSOM, which CSP does not police either way. Everything
+else — remote scripts, fonts, frames, forms, objects and outbound connections — is denied
+by `default-src 'none'`.
 
 The build stamps itself: Vite injects the git short hash and ISO timestamp, writes
 `dist/version.json`, and adds `<meta name="build">`. After a push, CI polls the live
@@ -327,7 +351,13 @@ Any other static host works the same way: publish `dist/`, no server required.
 - The only script that touches the network is `scripts/fetch-ocr-data.mjs`, which runs at
   setup time to restore language data.
 - **Clear data** in the header drops the loaded results and empties `localStorage`,
-  `sessionStorage`, IndexedDB and the Cache API. Only the light/dark preference is kept.
+  `sessionStorage`, IndexedDB, the Cache API and any service-worker registration. There is
+  no preference to keep: the theme follows the operating system and an in-session toggle
+  is forgotten on reload.
+- **There is no offline reload.** Without a service worker a page cannot be reopened with
+  the network down. What does hold is that an *already open* page keeps converting every
+  supported file type with the network off (`tests/offline-browser.test.ts` warms each
+  parser and the OCR engine online first, then asserts zero requests are attempted).
 
 ### Threat model
 
@@ -441,11 +471,17 @@ file is not going to a spreadsheet.
 | Audit | `npm run audit:prod` | no high or critical advisory in production dependencies |
 | Bundle scan | `npm run scan:dist` | every origin and every `fetch`/XHR/`sendBeacon`/`WebSocket`/`EventSource` in `dist/` is justified in `security/dist-baseline.json` |
 
-The production tree is 64 packages (13 direct, 51 transitive) and exactly one runtime
+The production tree is 70 packages (13 direct, 57 transitive) and exactly one runtime
 package declares an install script (`tesseract.js`'s `opencollective-postinstall`, which is
-never needed: the OCR assets are committed under `public/`). `npm audit --omit=dev` reports
-one **moderate** advisory (`fast-xml-parser` XMLBuilder comment injection, GHSA-gh4j-gqv2-49f6);
-the app only *parses* XML and never builds it, and the audit gate fails on high and critical.
+never needed: the OCR assets are committed under `public/`).
+
+`fast-xml-parser` was on 4.5.7, which carried GHSA-gh4j-gqv2-49f6 (XMLBuilder comment/CDATA
+injection). The app only imports `XMLParser` and never builds XML, so the advisory was
+unreachable — but the upgrade to 5.12.0 clears it, and the XML parity test, the hostile
+corpus (including `xxe.xml`) and the browser hostile suite all stay green on the new major.
+The price is six small MIT packages that v5 split out (`fast-xml-builder`, `anynum`,
+`is-unsafe`, `xml-naming`, `path-expression-matcher`, `@nodable/entities`); all are now in
+`security/allowed-deps.json`, and `npm audit --omit=dev` reports zero vulnerabilities.
 
 `security/dist-baseline.json` rewrites the review, not the other way round: adding a
 dependency or a call site fails CI until a person writes down why it is safe.
@@ -470,7 +506,14 @@ checked per deployment.
 
 `npm run verify-live` downloads `version.json`, `integrity.json` and every listed file
 from the deployed site, and fails unless the live commit matches `HEAD` and every live
-byte matches the manifest. A local `dist/` is compared too, but a difference is reported
+byte matches the manifest.
+
+**What it cannot see:** the manifest is served by the same host as the files it describes.
+An attacker who can replace the deployment *and* regenerate a self-consistent manifest
+would pass this check. It detects drift, a stale deploy and partial file changes — not a
+host that has been fully taken over. That is why the same comparison runs from CI against
+`dist/` built from `HEAD`, and why `e2e/snapshot.json` is a snapshot rather than a trusted
+oracle. A local `dist/` is compared too, but a difference is reported
 as a note (with `--strict-local` it fails): on this machine the build may legitimately
 have been made from the same source by a different platform.
 
@@ -488,23 +531,22 @@ The page keeps working: nothing it needs is on the internet. No server, no accou
 analytics. Every claim in this README can then be checked against the files on your disk
 without a single request leaving the machine.
 
-### Service worker policy
+### There is no service worker any more
 
-`public/sw.js` exists because the deployed site registered a service worker but shipped no
-`sw.js`, which logged a `404 /sw.js` on every visit. It is deliberately narrow:
+An earlier build registered one. The privacy charter rules out caches, so the worker is gone:
+no registration, no precache list, no `dist/assets.json`, and no offline reload.
 
-| Request | Policy |
-| --- | --- |
-| Navigations (`index.html`) | network first, `cache: 'no-store'`; the cached copy is only the offline fallback — a new deploy is live on the next reload |
-| `/version.json` | never intercepted, so the build stamp is always the live commit |
-| `/assets/`, `/tess/`, `/tessdata/` | cache first — those names are content hashed or engine versioned, so a cached copy cannot go stale |
-| `blob:`, `data:`, other origins, every other path | untouched |
+`public/sw.js` still exists, but only as a **tombstone**. A browser that visited the old site
+keeps that worker installed until its script changes and activates, so the new `sw.js` does the
+one thing it can: `skipWaiting`, delete every cache, unregister itself, and reload the pages it
+controlled so they run workerless. `src/lib/privacy.ts` does the same purge on every boot, so a
+browser that never re-checks `/sw.js` is cleaned anyway.
 
-The shell and every hashed bundle are precached at install from `dist/assets.json` (written by
-the build), because the first page load's asset requests happen before the worker can control
-them. `tests/sw-update.test.ts` proves the whole policy: it serves a build, kills the network and
-reloads (the app must still render), swaps in a second build and reloads (the new hash must
-appear), and asserts the cache contains only app assets — never file content.
+Where the original `404 /sw.js` came from: the old `main.tsx` registered `./sw.js`, but no
+`public/sw.js` was ever committed, so every visit asked for a file the host did not have and the
+SPA rewrite answered with `index.html`. `tests/sw-cleanup.test.ts` now installs the real
+`91ed3d7` worker from a fixture, loads the current build, and asserts the registrations, caches,
+`localStorage` and `sessionStorage` are all empty afterwards.
 
 ### Verify the privacy claim yourself
 
@@ -514,11 +556,24 @@ appear), and asserts the cache contains only app assets — never file content.
    same-origin (`row-data-converter.vercel.app`); none carries file bytes. A cross-origin
    request would be visible as a different domain in the *Domain* column.
 4. DevTools → **Application** → *Local Storage*, *Session Storage*, *IndexedDB*,
-   *Cache Storage*: nothing but the theme key and the service worker's own app-shell assets.
+   *Cache Storage*, *Service Workers*: all empty, before and after a conversion. The theme
+   follows the operating system and an in-session toggle writes nothing.
 
 This is measured, not asserted: `node e2e/run.mjs --mode privacy` converts one file of each
-input type and fails the run on any cross-origin request or any non-asset entry in browser
+input type and fails the run on any cross-origin request or any entry at all in browser
 storage. The latest run is recorded in `docs/live-audit.md`.
+
+The same harness works on any folder, not just `samples/dev`:
+
+```bash
+node e2e/run.mjs --base-url <url> --files /path/to/some/folder --out /tmp/u2s-out
+```
+
+It reads only the files in that folder, writes only under `--out`, and resolves its own
+snapshot (`e2e/snapshot.json`, formerly `expected.json`) relative to itself, so the working
+directory does not matter. Files with a snapshot entry are checked cell by cell; every other
+file is checked for a successful upload, conversion and download and nothing more — the
+snapshot is a record of one run, not a specification for unknown inputs.
 
 ---
 

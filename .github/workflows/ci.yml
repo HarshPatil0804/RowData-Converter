@@ -29,8 +29,9 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run typecheck
-      # Build first: the browser-parity and service-worker suites drive the
-      # production bundle in real Chrome, so dist/ must exist before `npm test`.
+      # Build first: the browser-parity, privacy, offline and determinism
+      # suites drive the production bundle in real Chrome, so dist/ must exist
+      # before `npm test`.
       - run: npm run build
       - name: Check build stamp and integrity chain landed in dist
         run: |
@@ -117,12 +118,37 @@ jobs:
       - name: Hostile files and the offline guarantee in real Chrome
         run: npx vitest run tests/hostile-browser.test.ts tests/offline-browser.test.ts
 
+  # Tasks A, E, F and G of the privacy brief, as its own gate. A full session in
+  # the built app must leave nothing in the browser, must send only same-origin
+  # GETs with no body, must not let a value from a file escape the page and the
+  # download, and must be served by a purely static host.
+  privacy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      # A: raw inventory of a full session (load, convert, tweak, download,
+      # clear) printed as JSON, then fail unless every store is empty.
+      - name: A — session inventory is empty
+        run: node scripts/inventory.mjs --assert-empty
+      # E and F: the network and canary proofs, in real Chrome.
+      - name: E, F — requests and storage canary
+        run: npx vitest run tests/privacy.test.ts
+      # G: no api/, no functions/, no analytics package, static file types only.
+      - name: G — the host is static
+        run: npx vitest run tests/static-hosting.test.ts
+
   # Verifies the deployed site. Needs the repository variable LIVE_URL
   # (Settings → Secrets and variables → Actions → Variables → New variable).
   # When it is missing the job still runs so it can say so out loud: a silent
   # skip looks exactly like a passing deploy check.
   verify-deploy:
-    needs: [checks, security]
+    needs: [checks, security, privacy]
     runs-on: ubuntu-latest
     steps:
       - name: Announce a missing LIVE_URL

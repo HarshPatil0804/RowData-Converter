@@ -69,7 +69,7 @@ https://vercel.com/data-analyst9/row-data-converter/…`. The project is
 `node e2e/run.mjs --base-url https://row-data-converter.vercel.app --files samples/dev --out e2e-out/live`
 
 All 22 files in `samples/dev` are uploaded; each must convert, export CSV (Tabular) and XLSX
-(Pivot). Every row is also checked against `e2e/expected.json`: the row count, the column count
+(Pivot). Every row is also checked against `e2e/snapshot.json` (then `e2e/expected.json`): the row count, the column count
 and three specific cells per file (first cell, a middle cell, the last cell).
 
 | File | Time | Rows | CSV | Pivot XLSX | Content check |
@@ -210,7 +210,14 @@ Every feature above was exercised under that CSP in the same run. `Clear data` e
 
 ## 6b. Service worker
 
-**Why it exists:** the production site registered a service worker but shipped no `/sw.js`, so
+> **Superseded (2026-11-06).** The privacy charter forbids caches, so the worker described in
+> this section was removed: no registration, no precache list, no `dist/assets.json`, and no
+> offline reload. `public/sw.js` is now a tombstone that unregisters itself and deletes caches;
+> `tests/sw-cleanup.test.ts` replaces `tests/sw-update.test.ts` and proves a browser holding the
+> old worker is cleaned on the next load. What follows is the record of the audit that produced
+> the worker, kept as history.
+
+**Why it existed:** the production site registered a service worker but shipped no `/sw.js`, so
 every visit logged `404 /sw.js`. It also makes the app open with no network.
 
 Policy (`public/sw.js`):

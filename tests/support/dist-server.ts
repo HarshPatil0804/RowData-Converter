@@ -63,12 +63,16 @@ export interface DistServer {
   port: number;
   close(): Promise<void>;
   setOffline(value: boolean): void;
+  /** Serve a different body for one path, e.g. an older build's /sw.js. */
+  override(pathname: string, body: string): void;
+  clearOverride(pathname: string): void;
   /** Requests that reached the server, for "did anything leave the page" checks. */
   requests: { method: string; url: string }[];
 }
 
 export async function startDistServer(requestedPort = 0): Promise<DistServer> {
   const requests: DistServer['requests'] = [];
+  const overrides = new Map<string, string>();
   let offline = false;
 
   const server = http.createServer((request, response) => {
@@ -78,6 +82,15 @@ export async function startDistServer(requestedPort = 0): Promise<DistServer> {
       return;
     }
     const pathname = new URL(request.url ?? '/', `http://localhost:${port}`).pathname;
+    const replacement = overrides.get(pathname);
+    if (replacement !== undefined) {
+      response.writeHead(200, {
+        'Content-Type': 'text/javascript; charset=utf-8',
+        ...headersFor(pathname),
+      });
+      response.end(replacement);
+      return;
+    }
     let file = path.join(DIST, pathname === '/' ? 'index.html' : decodeURIComponent(pathname));
     if (!fs.existsSync(file) || fs.statSync(file).isDirectory()) {
       // SPA fallback, exactly like the vercel rewrite.
@@ -100,6 +113,12 @@ export async function startDistServer(requestedPort = 0): Promise<DistServer> {
     requests,
     setOffline(value: boolean) {
       offline = value;
+    },
+    override(pathname: string, body: string) {
+      overrides.set(pathname, body);
+    },
+    clearOverride(pathname: string) {
+      overrides.delete(pathname);
     },
     async close() {
       await new Promise<void>((resolve) => server.close(() => resolve()));

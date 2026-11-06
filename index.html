@@ -32,17 +32,6 @@
       content="Turn any file into clean, structured data entirely in your browser. Files never leave your device."
     />
     <meta name="twitter:image" content="https://row-data-converter.vercel.app/og.png" />
-    <script>
-      (function () {
-        try {
-          var stored = localStorage.getItem('u2s-theme');
-          var dark = stored ? stored === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
-          if (dark) document.documentElement.classList.add('dark');
-        } catch (e) {
-          /* storage unavailable: keep default theme */
-        }
-      })();
-    </script>
   </head>
   <body>
     <noscript>

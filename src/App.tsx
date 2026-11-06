@@ -64,13 +64,10 @@ export default function App() {
   /** Set by Cancel so an in-flight run stops instead of finishing silently. */
   const cancelledRef = useRef(false);
 
+  // The toggle is in-session only: the class changes for this tab, nothing is
+  // written down, and a reload goes back to the operating system's setting.
   useEffect(() => {
     document.documentElement.classList.toggle('dark', dark);
-    try {
-      localStorage.setItem('u2s-theme', dark ? 'dark' : 'light');
-    } catch {
-      // storage unavailable (private mode) – theme still applies for this session
-    }
   }, [dark]);
 
   useEffect(() => () => clientRef.current?.dispose(), []);
@@ -270,7 +267,7 @@ export default function App() {
             </div>
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">
-            <span className="hidden md:inline-flex badge badge-boolean">offline-ready</span>
+            <span className="hidden md:inline-flex badge badge-boolean">on-device</span>
             <button
               className="btn btn-secondary"
               onClick={() => {

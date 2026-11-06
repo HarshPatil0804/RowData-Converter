@@ -51,19 +51,6 @@ export default defineConfig({
         ];
       },
       closeBundle() {
-        // Precache list for the service worker: every content-hashed bundle,
-        // including the workers, so the app opens (and converts) with no
-        // network. Written at build time because the hashes only exist now.
-        const assetsDir = join('dist', 'assets');
-        // Sorted: readdir order is filesystem-dependent, and an unsorted list
-        // would make two builds of the same commit differ.
-        const assets = existsSync(assetsDir)
-          ? readdirSync(assetsDir)
-              .sort()
-              .map((name) => `./assets/${name}`)
-          : [];
-        writeFileSync('dist/assets.json', `${JSON.stringify({ hash: BUILD_HASH, assets })}\n`);
-
         // Integrity chain: integrity.json holds the SHA-256 of every file we
         // upload, and version.json holds the SHA-256 of integrity.json. A
         // visitor (or `npm run verify-live`) can therefore prove that what the

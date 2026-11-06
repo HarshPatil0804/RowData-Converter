@@ -27,12 +27,26 @@ import path from 'node:path';
 import process from 'node:process';
 
 /**
- * Expected content per sample, generated from the Node pipeline. The parity
- * suite proves the production bundle emits the same CSV, so these numbers hold
- * for the deployed app; this file makes the live run assert *content*, not just
- * that a download happened.
+ * A snapshot, not an oracle.
+ *
+ * `e2e/snapshot.json` records what the Node pipeline produced for
+ * `samples/dev` at the time it was generated. The parity suite proves the
+ * production bundle emits the same CSV, so the numbers hold for the deployed
+ * app; that makes the live run assert *content*, not just that a download
+ * happened.
+ *
+ * Two honest limits:
+ *  - It only covers files it has an entry for. Any other folder is still
+ *    exercised — upload, conversion and download must succeed — but without
+ *    cell-level assertions, because there is nothing to compare against.
+ *  - It is a copy of the project's own output. A host that replaced both the
+ *    app and this snapshot would look consistent; `scripts/verify-live.mjs`
+ *    (hash of every deployed file vs. the manifest) is what makes that visible.
+ *
+ * The path is resolved from this file, not from the working directory, so the
+ * harness runs from anywhere against any folder.
  */
-const EXPECTED = JSON.parse(fs.readFileSync(path.resolve('e2e/expected.json'), 'utf8')).files;
+const EXPECTED = JSON.parse(fs.readFileSync(new URL('./snapshot.json', import.meta.url), 'utf8')).files;
 
 // ---------------------------------------------------------------- args -----
 function arg(name, fallback) {
@@ -231,7 +245,8 @@ async function convertOne(tab, filePath, { wantPivot = true, recordIt = true } =
     }
   }
 
-  record.ok = record.csv !== null && (record.content?.ok ?? false);
+  // Files with no snapshot entry are checked for success only.
+  record.ok = record.csv !== null && (record.content ? record.content.ok : true);
   if (recordIt) report.files.push(record);
   return record;
 }
@@ -368,14 +383,9 @@ async function runPrivacy(browser) {
           }
         }
       }
-      // The service worker legitimately caches the app shell and its own
-      // assets; only non-asset entries (or blob:/data: URLs) would suggest file
-      // content was stored.
-      for (const url of cacheUrls) {
-        if (!/^https?:\/\/[^/]+\/(assets\/.+|tess\/.+|tessdata\/.+|sw\.js|og\.png)?$/.test(url)) {
-          hits.push(`cache:${url}`);
-        }
-      }
+      // There is no service worker and no cache policy any more: the app must
+      // not write to Cache Storage at all, so every entry is a finding.
+      for (const url of cacheUrls) hits.push(`cache:${url}`);
       return { hits: hits.map((h) => `${label} ${h}`), cacheEntries: cacheUrls.length };
     }, type);
 

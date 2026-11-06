@@ -15,6 +15,9 @@ export default tseslint.config(
       'e2e-out/**',
       // Nested foreign clone sitting in this folder – not part of this project.
       'RowData-Converter/**',
+      // Verbatim snapshots of earlier builds (e.g. the old service worker that
+      // the cleanup test installs). They are evidence, not code we maintain.
+      'tests/fixtures/**',
     ],
   },
   js.configs.recommended,
@@ -45,6 +48,8 @@ export default tseslint.config(
         sessionStorage: 'readonly',
         indexedDB: 'readonly',
         caches: 'readonly',
+        navigator: 'readonly',
+        location: 'readonly',
         performance: 'readonly',
         PerformanceObserver: 'readonly',
       },

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generatedBy": "node scripts/scan-dist.mjs --update (reasons are written by hand and never overwritten)",
+  "generatedBy": "node scripts/scan-dist.mjs --update",
   "domains": {
     "http://$": "Template literal inside a URL-normalising helper (`http://${host}`), not a literal request.",
     "http://docs.oasis-open.org": "ODF/OpenDocument XML namespace and relation-type URIs read from .ods/.fods files.",
@@ -44,9 +44,6 @@
       "XMLHttpRequest": 4,
       "fetch(": 9
     },
-    "sw.js": {
-      "fetch(": 3
-    },
     "tess/tesseract-core-lstm.wasm.js": {
       "XMLHttpRequest": 6,
       "fetch(": 1
@@ -60,7 +57,6 @@
     "assets/index.js": "One fetch: the service-worker update check / asset list read, same origin only (CSP connect-src 'self').",
     "assets/pdf.worker.min.mjs": "pdf.js loads its cMap and standard-font files with fetch/XHR; the app only ever passes same-origin /assets paths, and CSP connect-src 'self' blocks anything else.",
     "assets/pipeline.worker.js": "tesseract.js and pdf.js inside the conversion worker: same-origin reads of /tessdata and the PDF CMaps. The app overrides every library default URL with an origin-relative path.",
-    "sw.js": "The service worker's own cache fills: ./assets.json (precache list) and the requests it re-fetches. Everything is relative to the app origin.",
     "tess/tesseract-core-lstm.wasm.js": "Emscripten's wasm loader fetching its sibling binary; only same-origin paths are passed by tesseract.js.",
     "tess/tesseract-core-simd-lstm.wasm.js": "Same Emscripten loader, SIMD build."
   }
