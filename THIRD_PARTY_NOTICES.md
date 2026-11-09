@@ -110,7 +110,7 @@ to the text below.
 | Tesseract wasm core | `public/tess/tesseract-core-lstm.wasm.js` | Apache-2.0 | npm tesseract.js-core (copied by scripts/copy-ocr-assets.mjs) | LSTM-only build, matching the OEM the app uses |
 | Tesseract worker | `public/tess/worker.min.js` | Apache-2.0 | npm tesseract.js dist/worker.min.js (copied by scripts/copy-ocr-assets.mjs) | Runs OCR inside a Web Worker |
 | Tesseract English language data | `public/tessdata/eng.traineddata.gz` | Apache-2.0 | https://tessdata.projectnaptha.com/4.0.0_fast/eng.traineddata.gz (tesseract-ocr/tessdata_fast, 4.0.0_fast; fallbacks: https://cdn.jsdelivr.net/npm/@tesseract.js-data/eng/4.0.0_fast/eng.traineddata.gz and https://raw.githubusercontent.com/naptha/tessdata/gh-pages/4.0.0_fast/eng.traineddata.gz) | Downloaded once by scripts/fetch-ocr-data.mjs; see that script for the exact URLs |
-| pdf.js worker | `dist/assets/pdf.worker.min-CjEcRF4W.mjs` | Apache-2.0 | npm pdfjs-dist build/pdf.worker.min.mjs, bundled by Vite | Renders PDF pages off the main thread |
+| pdf.js worker | `dist/assets/pdf.worker.min-<contenthash>.mjs` | Apache-2.0 | npm pdfjs-dist build/pdf.worker.min.mjs, bundled by Vite | Renders PDF pages off the main thread |
 
 The Tesseract worker and wasm cores are Apache-2.0, as is the `tesseract.js-core` package they come from.
 The English language data is the `tessdata_fast` 4.0.0 LSTM model, also Apache-2.0. The pdf.js worker is

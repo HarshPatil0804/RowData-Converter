@@ -19,7 +19,6 @@
  * `security/allowed-licenses.json`: a notices file must never be the first place
  * a licence problem is noticed.
  */
-import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
@@ -90,21 +89,14 @@ function bundledAssets() {
       ),
     );
   }
-  const pdfWorker = (() => {
-    const assets = 'dist/assets';
-    if (!existsSync(assets)) return null;
-    const file = execFileSync('node', [
-      '-e',
-      "const fs=require('fs');const f=fs.readdirSync('dist/assets').find((n)=>/^pdf\\.worker\\.min-.*\\.mjs$/.test(n));if(f)process.stdout.write(f)",
-    ])
-      .toString()
-      .trim();
-    return file === '' ? null : file;
-  })();
+  // The worker file name carries a content hash that changes with every build,
+  // so the row names the pattern rather than one build's file: the notices must
+  // be identical whether or not dist/ happens to exist (CI checks them before
+  // building).
   assets.push(
     asset(
       'pdf.js worker',
-      pdfWorker ? `dist/assets/${pdfWorker}` : 'dist/assets/pdf.worker.min-<hash>.mjs',
+      'dist/assets/pdf.worker.min-<contenthash>.mjs',
       'Apache-2.0',
       'npm pdfjs-dist build/pdf.worker.min.mjs, bundled by Vite',
       'Renders PDF pages off the main thread',
