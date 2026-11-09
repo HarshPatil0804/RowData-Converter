@@ -1,5 +1,5 @@
 import type { Cell } from '../types';
-import { toSnakeCase } from '../lib/strings';
+import { isNullSentinel, toSnakeCase } from '../lib/strings';
 
 /**
  * R5 – packed fields.
@@ -10,7 +10,10 @@ import { toSnakeCase } from '../lib/strings';
  *   1. key=value pairs  – "patient=Pooja; age=22; city=Nashik"
  *   2. a composite pair – "orthopedics / physiotherapy", "Cardiology - Stress
  *      Test" where the column itself is labelled as a composite
- *      ("Department / Procedure").
+ *      ("Department / Procedure"). S5 – the two halves may be joined by
+ *      different separators from row to row ("North - COMPLETED" next to
+ *      "Europe / completed"); the column only has to agree on *one separator
+ *      per cell*, and the header names the halves.
  *
  * Nothing is split on a hunch: an 80% miss rate means the column really is a
  * single value.
@@ -20,8 +23,29 @@ const MATCH_RATIO = 0.8;
 
 /** `key=value` inside a `;`-separated cell. */
 const KV_PART = /^\s*([A-Za-z][A-Za-z0-9 _-]{0,30})\s*=\s*(.+?)\s*$/;
-/** Either a slash or a spaced dash/en-dash. */
-const PAIR_RE = /\s*\/\s*|\s+[-–—]\s+/;
+/**
+ * S5 – the small, closed set of composite separators: spaced dash/en/em dash,
+ * slash, spaced pipe, spaced colon. A cell must carry exactly ONE of them.
+ *
+ * The spaces around the dash and the colon are what keep hyphenated names
+ * ("Jean-Luc"), ISO-ish dates ("10-12-2025") and clock times ("10:30") whole.
+ */
+const PAIR_SEPARATORS: RegExp[] = [/\s+[-–—]\s+/, /\s*\/\s*/, /\s+\|\s+/, /\s+:\s+/];
+
+function separatorMatches(value: string): { left: string; right: string } | null {
+  const found: { index: number; length: number }[] = [];
+  for (const pattern of PAIR_SEPARATORS) {
+    const global = new RegExp(pattern.source, 'g');
+    let match: RegExpExecArray | null;
+    while ((match = global.exec(value)) !== null) {
+      found.push({ index: match.index, length: match[0].length });
+      if (match[0].length === 0) global.lastIndex += 1;
+    }
+  }
+  if (found.length !== 1) return null;
+  const [only] = found as [{ index: number; length: number }];
+  return { left: value.slice(0, only.index).trim(), right: value.slice(only.index + only.length).trim() };
+}
 
 /** Container suffixes: "patient_details" is the *patient's* details. */
 const CONTAINER_RE = /(?:^|[_ -])(details|info|information|data|meta|profile|record)$/i;
@@ -31,7 +55,8 @@ function nonNull(values: Cell[]): string[] {
   for (const value of values) {
     if (value === null || value === undefined || typeof value !== 'string') continue;
     const text = value.trim();
-    if (text !== '') out.push(text);
+    if (text === '' || isNullSentinel(text)) continue;
+    out.push(text);
   }
   return out;
 }
@@ -48,14 +73,17 @@ export function kvPairs(value: string): [string, string][] {
 }
 
 export function splitPair(value: string): [string, string] | null {
-  const match = PAIR_RE.exec(value);
-  if (!match) return null;
-  const left = value.slice(0, match.index).trim();
-  const right = value.slice(match.index + match[0].length).trim();
+  // A null sentinel is missing data, not a composite: "N/A" must never become
+  // N + A. It is converted to null later in the clean stage.
+  if (isNullSentinel(value)) return null;
+  const parts = separatorMatches(value);
+  if (!parts) return null;
+  const { left, right } = parts;
   if (!left || !right) return null;
-  // Both halves must be words – this keeps dates ("06/02/2026"), numbers and
-  // version strings out of the split path.
-  if (!/[A-Za-z]/.test(left) || !/[A-Za-z]/.test(right)) return null;
+  // At least one half must be a word. That keeps dates ("10/12/2025"), date
+  // ranges ("10 - 20") and version strings out; it still splits composites
+  // whose first half is a number, such as "0 / Comics", because the second
+  // half is what the column is about.
   return [left, right];
 }
 
@@ -183,7 +211,9 @@ export function splitColumn(source: string, values: Cell[]): PackedSplit | null 
     for (const value of values) {
       const text = typeof value === 'string' ? value.trim() : '';
       const pair = text ? splitPair(text) : null;
-      left.push(pair ? pair[0] : null);
+      // A cell without a composite separator keeps its whole value in the first
+      // half instead of being emptied – losing it would be silent data loss.
+      left.push(pair ? pair[0] : text === '' || isNullSentinel(text) ? null : text);
       right.push(pair ? pair[1] : null);
     }
     return { names: pairNames, columns: [left, right], kind: 'pair' };

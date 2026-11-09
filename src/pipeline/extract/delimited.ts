@@ -1,5 +1,6 @@
 import Papa from 'papaparse';
 import type { Cell } from '../../types';
+import { splitCells } from './split';
 
 export interface DelimitedResult {
   columns: string[];
@@ -78,29 +79,7 @@ export function detectDelimiter(text: string): { delimiter: string; fields: numb
 }
 
 /** Split one line honouring double quotes (RFC-4180-ish). */
-export function splitLine(line: string, delimiter: string): string[] {
-  const cells: string[] = [];
-  let current = '';
-  let inQuotes = false;
-  for (let i = 0; i < line.length; i += 1) {
-    const char = line[i];
-    if (char === '"') {
-      if (inQuotes && line[i + 1] === '"') {
-        current += '"';
-        i += 1;
-      } else {
-        inQuotes = !inQuotes;
-      }
-    } else if (char === delimiter && !inQuotes) {
-      cells.push(current);
-      current = '';
-    } else {
-      current += char;
-    }
-  }
-  cells.push(current);
-  return cells.map((cell) => cell.trim());
-}
+export const splitLine = splitCells;
 
 /** Parse delimited text with Papa Parse (auto delimiter when omitted). */
 export function parseDelimited(text: string, delimiter?: string): DelimitedResult {

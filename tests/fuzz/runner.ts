@@ -21,7 +21,7 @@ import { parseNumberValue } from '../../src/lib/numbers';
 import {
   INJECTORS,
   PHASES,
-  lineOf,
+  serialLines,
   serialize,
   type InjectContext,
 } from './injectors';
@@ -69,6 +69,7 @@ export function buildCase(gt: GroundTruth, seed: number, injectorNames: string[]
     parenColumns: new Set<number>(),
     overlapColumns: new Set<number>(),
     preamble: [],
+    interior: [],
     footer: [],
     netRowAdds: 0,
     expect: {},
@@ -149,7 +150,6 @@ export async function runCase(
   };
 
   const { text, ctx } = buildCase(gt, seed, injectorNames);
-  const delimiterChar = ctx.delimiter ?? ',';
 
   let dataset: Dataset;
   try {
@@ -167,16 +167,11 @@ export async function runCase(
   // trailing blank lines never reach the parser; every remaining line — junk,
   // blank or data — does, and R1 rejects the junk and blank ones. Expected
   // rejected is therefore: surviving lines − header − kept (non-blank) data rows.
-  const serialLines = [
-    ...ctx.preamble.map((row) => lineOf(row, delimiterChar)),
-    lineOf(ctx.header as unknown as Cell[], delimiterChar),
-    ...ctx.rows.map((row) => lineOf(row, delimiterChar)),
-    ...ctx.footer.map((row) => lineOf(row, delimiterChar)),
-  ];
+  const lines = serialLines(ctx);
   let head = 0;
-  let tail = serialLines.length - 1;
-  while (head <= tail && serialLines[head].trim() === '') head += 1;
-  while (tail >= head && serialLines[tail].trim() === '') tail -= 1;
+  let tail = lines.length - 1;
+  while (head <= tail && (lines[head] as string).trim() === '') head += 1;
+  while (tail >= head && (lines[tail] as string).trim() === '') tail -= 1;
   const survivingLines = tail - head + 1;
   const keptDataRows = ctx.rows.filter((row) => !isBlankRow(row)).length;
   result.expectedRejected = survivingLines - 1 - keptDataRows;
@@ -188,9 +183,27 @@ export async function runCase(
     report.rejectedCount === result.rejected;
 
   // Expected kept rows, deduped the way the pipeline dedupes (R8).
+  // R14 is part of that contract: a column with some ids missing gets a
+  // generated_id, so two otherwise identical rows whose id is MISSING are two
+  // records and must stay two rows. Only rows with ids can collapse.
   const expectedKept = ctx.expected.filter((row) => !isBlankRow(row));
+  const idLike = ctx.gt.header
+    .map((name, index) => ({ name, index }))
+    .filter(({ name }) => /(?:^|[_ -])(id|ids|no|num|number|code|key|ref)(?:$|[_ -])/i.test(name))
+    .map(({ index }) => index)
+    .filter((index) => {
+      const values = expectedKept.map((row) => row[index]);
+      return values.some(nullish) && values.some((value) => !nullish(value));
+    });
+  const hasMissingId = (row: Cell[]): boolean => idLike.some((index) => nullish(row[index]));
+
   const seen = new Set<string>();
+  const pinned: Cell[][] = [];
   const expectedFinal = expectedKept.filter((row) => {
+    if (hasMissingId(row)) {
+      pinned.push(row);
+      return true;
+    }
     const key = row.map((cell) => (typeof cell === 'string' ? cleanText(cell).trim().toLowerCase() : cell === null || cell === undefined ? '' : String(cell))).join('\u0001');
     if (seen.has(key)) return false;
     seen.add(key);

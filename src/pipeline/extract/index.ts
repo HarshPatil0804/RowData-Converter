@@ -10,7 +10,7 @@ import { emlToExtraction } from './eml';
 import { docxToExtraction } from './docx';
 import { pdfToExtraction } from './pdf';
 import { imageToExtraction } from './image';
-import { parseDelimited } from './delimited';
+import { sniffTable, widestRecord } from './sniff';
 import {
   assertColumnCount,
   assertHeuristicBudget,
@@ -83,29 +83,37 @@ export async function extractSource(
       return imageToExtraction(bytes, source, (fraction, message) =>
         report(0.1 + fraction * 0.8, message === 'ocr' ? 'Running OCR' : `OCR: ${message}`),
       );
-    case 'delimited': {
+    case 'delimited':
+    case 'text':
+    default: {
       const { text } = decodeText(bytes, detection.encoding);
       // Checked before parsing: a 50 MB single line is refused in one pass
       // instead of being handed to the CSV scanner.
       assertLineLengths(text);
-      const hint = detection.extension === 'tsv' || detection.extension === 'tab' ? '\t' : undefined;
-      const parsed = parseDelimited(text, hint);
-      if (parsed.rows.length === 0) throw new Error('File contains no rows');
-      assertColumnCount(Math.max(...parsed.rows.map((row) => row.length)));
-      const label = parsed.delimiter === '\t' ? 'TAB' : `"${parsed.delimiter}"`;
-      return {
-        kind: 'table',
-        source,
-        columns: [],
-        rows: parsed.rows,
-        strategy: `Delimited text · delimiter ${label}`,
-        notes: parsed.notes,
-      };
-    }
-    case 'text':
-    default: {
-      const { text } = decodeText(bytes, detection.encoding);
       if (!text.trim()) throw new Error('File contains no readable text');
+
+      // S4 – the content decides the structure, and the extension decides
+      // nothing: `.csv`, `.tsv`, `.dat`, `.txt` and a name without an extension
+      // all run this one reader. No delimiter passes → Plain text, for every
+      // one of them.
+      const sniffed = sniffTable(text);
+      if (sniffed) {
+        assertColumnCount(sniffed.fields);
+        const label = sniffed.delimiter === '\t' ? 'TAB' : `"${sniffed.delimiter}"`;
+        return {
+          kind: 'table',
+          source,
+          columns: [],
+          rows: sniffed.rows,
+          strategy: `Delimited text · delimiter ${label}`,
+          notes: sniffed.notes,
+          rejectedRows: sniffed.rejected,
+        };
+      }
+
+      // Even when no structure is recognised, the width limit still holds: a
+      // two-line "CSV" with 5,000 commas is still 5,001 columns of work.
+      assertColumnCount(widestRecord(text));
       return { kind: 'text', source, text, strategy: 'Plain text', notes: [] };
     }
   }

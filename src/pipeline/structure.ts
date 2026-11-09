@@ -18,6 +18,7 @@ export function structureExtraction(extraction: Extraction): RawTable {
       hasHeader: extraction.hasHeader ?? null,
       strategy: extraction.strategy,
       notes: [...extraction.notes],
+      rejectedRows: extraction.rejectedRows ? [...extraction.rejectedRows] : undefined,
     };
   }
   if (extraction.kind === 'records') {
@@ -239,28 +240,6 @@ function tryKeyValue(text: string): RawTable | null {
 }
 
 // -------------------------------------------------------------- delimited --
-
-function tryDelimited(text: string): RawTable | null {
-  const detected = detectDelimiter(text);
-  if (!detected) return null;
-  if (detected.fields < 3 && !/\t/.test(detected.delimiter)) return null;
-
-  const parsed = parseDelimited(text, detected.delimiter);
-  if (parsed.rows.length < 2) return null;
-
-  const modalWidth = detected.fields;
-  const consistent = parsed.rows.filter((row) => row.length === modalWidth).length / parsed.rows.length;
-  if (consistent < 0.8 && modalWidth < 3) return null;
-
-  return {
-    columns: [],
-    rows: parsed.rows,
-    hasHeader: null,
-    strategy: `Delimited text · delimiter ${detected.delimiter === '\t' ? 'TAB' : `"${detected.delimiter}"`}`,
-    notes: [...parsed.notes],
-  };
-}
-
 // ------------------------------------------------------- repeated patterns --
 
 function templateOf(line: string): string {
@@ -415,9 +394,6 @@ function structureText(text: string, strategy: string, notes: string[]): RawTabl
 
   const keyValue = tryKeyValue(text);
   if (keyValue) return { ...keyValue, notes: [...shared, ...keyValue.notes] };
-
-  const delimited = tryDelimited(text);
-  if (delimited) return { ...delimited, notes: [...shared, ...delimited.notes] };
 
   const patterned = tryPatternedLines(lines);
   if (patterned) return { ...patterned, notes: [...shared, ...patterned.notes] };

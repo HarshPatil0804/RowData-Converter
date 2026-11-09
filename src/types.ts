@@ -19,6 +19,12 @@ export interface RawTable {
   /** Human readable label of how the data was obtained, e.g. "CSV · delimiter ','". */
   strategy: string;
   notes: string[];
+  /**
+   * S4 – lines the reader itself refused as table rows (banner, export date,
+   * delimiter padding, error / summary / footer lines). They are rejected rows
+   * with a reason, never silently dropped.
+   */
+  rejectedRows?: RejectedRow[];
 }
 
 /** Intermediate output of every extractor. */
@@ -32,6 +38,8 @@ export type Extraction =
       hasHeader?: boolean;
       strategy: string;
       notes: string[];
+      /** S4 – lines that did not fit the structure found in the content. */
+      rejectedRows?: RejectedRow[];
     }
   | { kind: 'records'; source: string; records: Record<string, Cell>[]; strategy: string; notes: string[] }
   | { kind: 'text'; source: string; text: string; strategy: string; notes: string[] };

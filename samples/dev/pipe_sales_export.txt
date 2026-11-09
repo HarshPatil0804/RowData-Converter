@@ -1,0 +1,13 @@
+RAW EXPORT - SYSTEM LOGS & SALES DATA - CONFIDENTIAL,,,
+Export Date: 2026-10-24,,,
+,,,
+Order_ID | Cust_Details | Trans_Date | Amount_USD | Region / Status
+#1001 | name=John Doe; age=34; city=New York | 10/12/2025 | $1250.50 | North - COMPLETED
+1002 | name=Alice Smith; city=London | 2025-10-13 | 850.00 | Europe / completed
+#1003 | name=Bob Lee; age=29; city=Tokyo | Oct 14 2025 | N/A | Asia - PENDING
+ERR_ROW_9999_SKIPPED_SYSTEM_CORRUPT,,,
+1004 | name=Claire; city=Paris | 15-10-2025 | $2100.75 | Europe - COMPLETED
+1005 | name=John Doe; age=34; city=New York | 2025/10/16 | $450 | North - CANCELLED
+#1006 | name=David K; city=New York | 10/17/2025 | $1250.50 | North - COMPLETED
+,,,
+TOTAL SALES CALCULATED: $5901.75,,,

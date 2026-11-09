@@ -111,8 +111,9 @@ detect → extract → structure → clean → report → choose → download
 1. **Detect** — identify the file type and encoding from magic bytes, extension and MIME.
 2. **Extract** — pull raw text/tables/records with the right parser (SheetJS, pdf.js,
    mammoth, Tesseract.js, JSZip, DOMParser, …).
-3. **Structure** — convert to rows and columns: delimiter/table detection, key:value pairs,
-   repeated patterns, entity extraction, nested-JSON/XML flattening.
+3. **Structure** — convert to rows and columns: delimiter/table detection from the **content**
+   (S4, see below), key:value pairs, repeated patterns, entity extraction, nested-JSON/XML
+   flattening.
 4. **Clean** — the ten rules R1–R10 below. Outliers and oddities are **flagged, never
    silently deleted**.
 5. **Quality report** — rows in/out/rejected, duplicates, nulls and conversions per column,
@@ -130,7 +131,7 @@ Every rule is generic — no column name is ever special-cased.
 | **R2 IDs** | A column that is mostly digits with variable prefixes/noise (`#`, `VIS-`, spaces, tags like `DUPLICATE?`) is stripped to the core ID. The untouched original stays in `<col>_raw`, the tag goes to a flag column. |
 | **R3 Dates** | Day/month order is inferred **per format pattern** (separator + shape), not per column: if any value of a pattern has part 1 > 12 the pattern is DD-MM, part 2 > 12 makes it MM-DD, and the proven order is applied to that pattern's ambiguous values only. A pattern with no proof sets `date_ambiguous` and is read with the UI toggle (default **DD-MM**) — flipping the toggle re-runs the pipeline instantly. Dates after the file's export date get `date_future`. Output is ISO `YYYY-MM-DD`; `Mar 28 2026` and `17-Apr-2026` styles parse too. |
 | **R4 Numbers** | `₹`, `Rs.`, `INR` and Indian grouping (`12,34,567`) parse to numbers. Text inside a numeric column (`"insurance pending"`) becomes `null` in the number and the text moves to `<col>_note`. `N/A`/blank → null. Text never survives in a numeric column. |
-| **R5 Packed fields** | `key=value; key=value` cells split into separate columns (`patient_name`, `age`, `city`), and `A / B` or `A - B` cells split into two (`department`, `procedure`) — only when the pattern is consistent in ≥ 80% of cells. |
+| **R5 Packed fields** | `key=value; key=value` cells split into separate columns (`patient_name`, `age`, `city`), and `A / B` or `A - B` cells split into two (`department`, `procedure`) — only when the pattern is consistent in ≥ 80% of cells. S5: the two halves of a composite may use **different separators from row to row** (`North - COMPLETED`, `Europe / completed`, `Asia | PENDING`); each cell must carry exactly one separator from `-`, `/`, `\|`, `:`, and the header names the halves. `Jean-Luc`, `10-12-2025`, `10 - 20` and `N/A` are never split. |
 | **R6 Categories** | Trim, collapse spaces, ignore case, cluster variants and use the most frequent form as canonical. Status-like columns become `UPPER_SNAKE_CASE`; city/department become Title Case. Every before → after change is saved in the report's **Value mappings**. |
 | **R7 Placeholders** | `"no extra notes"`, `N/A`, `none`, `-` become null. System-generated text (`SYSTEM NOTE: …`) moves to a `system_flag` column instead of the human notes column. |
 | **R8 Duplicates** | After R2, exact duplicates are dropped and logged. Rows sharing an ID but differing in content are both kept with `duplicate_id_conflict = true`. People are never merged by name — repeated names are only counted. |
@@ -139,6 +140,29 @@ Every rule is generic — no column name is ever special-cased.
 
 The pipeline also carries later rules (R11–R18) for spelled-out numbers, multi-item cells,
 overlapping categories and blank-row handling; `src/pipeline/rules.ts` is the source of truth.
+
+### The table structure comes from the content (S4)
+
+A real export is rarely made only of rows: it opens with a banner and an export date (padded
+with whichever delimiter the export tool was configured with), and ends with an error line and
+a control total. Counting those padding delimiters is how a six-row pipe table came out as one
+text column. `src/pipeline/extract/sniff.ts` now reads the structure instead:
+
+1. lines that are not table lines are classified first — blank, delimiter-only padding, and
+error / metadata / summary / footer lines;
+2. every candidate delimiter (`,` `;` TAB `|`) is scored only on the lines that carry it at
+least twice: the modal field count and how many lines agree with it;
+3. the (delimiter, field count) with the most agreeing lines wins, ties go to more columns, so
+`…,,,` can never vote for the comma;
+4. lines that do not fit become **Rejected rows** with a reason (a row shorter than the table
+is a row with missing trailing cells and is padded, never shifted);
+5. when no delimiter passes, the file is read as Plain text (or by the text ladder: Markdown
+table, log lines, key:value, repeated pattern).
+
+The **extension decides nothing**: the same bytes named `.txt`, `.csv`, `.tsv`, `.dat` or with
+no extension produce the same table, which `tests/pipe-export.test.ts` asserts byte for byte.
+`tests/text-shapes.test.ts` guards the other direction: prose with commas, a key:value config, a
+log file and a Markdown table keep their own readers.
 
 > Rules R1–R10 are described below; the later ones are additive and never delete rows.
 
@@ -189,7 +213,7 @@ Downloads are generated entirely in the browser with `Blob` + `URL.createObjectU
 npm test
 ```
 
-Eighteen suites, 127 tests:
+Twenty suites, 144 tests:
 
 | Suite | Covers |
 | --- | --- |
@@ -202,6 +226,8 @@ Eighteen suites, 127 tests:
 | `tests/determinism.test.ts` | Byte-identical CSV/XLSX/report/pivot output across four time zones and four locales |
 | `tests/date-toggle.test.ts` | R3 toggle: ambiguous dates really change, dates proven by the data do not |
 | `tests/pipeline.test.ts` | Every sample file converts to a clean table automatically |
+| `tests/pipe-export.test.ts` | **S4/S5 regression** — the pipe export inside comma padding and junk lines: six rows, ids, dates, amounts, the TOTAL reconciliation, the packed details, the mixed-separator composite column, every rejected line; and byte-identical output under five file extensions |
+| `tests/text-shapes.test.ts` | **S4 negative controls** — prose with commas, a key:value config, a log file and a Markdown table keep their strategies (also under a `.csv` name) |
 | `tests/ocr.test.ts` | Scanned-image OCR → reconstructed table |
 | `tests/pivot.test.ts` | Auto-suggestion and all five aggregations |
 | `tests/export.test.ts` | CSV / JSON / XLSX round-trips through real parsers |
@@ -260,6 +286,12 @@ flags; and a reconciliation of 4 668 696.06 parsed vs 4 287 650.00 reported (dif
 381 046.06). The pivot half checks all 30 cells, every row/column total, the 4 668 696.06
 grand total, the 248/999 hidden-row banner, the 751 count total, the 31.3% flagged share and
 the 3 206 869.46 total after excluding flagged rows.
+
+`samples/dev/pipe_sales_export.txt` is the second hand-checked fixture: a six-row pipe table
+with `,,,` padding, a banner, an export date, an `ERR_ROW_…` line, two blank lines, a `TOTAL …`
+line, packed `name=…; age=…; city=…` details, four date formats, currency, `N/A` and a
+`Region / Status` column that uses ` - ` and ` / ` in different rows. Its expected values are
+derived by hand (the amounts sum to the file's own total), never snapshotted from the app.
 
 `npm run samples` regenerates the 22 messy fixtures in `samples/` — a messy CSV, nested JSON,
 a PDF with a table, a scanned image, a DOCX, a log file, a ZIP and more, including a

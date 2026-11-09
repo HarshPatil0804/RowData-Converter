@@ -234,6 +234,11 @@ export function cleanTable(
         ? 'no'
         : 'auto';
   const scan = rejectRows(raw.rows, mode, columnsKnown);
+  // S4 – lines the reader refused before R1 saw them (banner, export date,
+  // delimiter padding, error / summary / footer lines) join the rejected table,
+  // so the row accounting stays exact: rows_in = clean + rejected + duplicates.
+  const readerRejected = raw.rejectedRows ?? [];
+  scan.rejected.push(...readerRejected);
   if (scan.rejected.length > 0) fired.add('R1');
   if (scan.rejected.some((row) => row.reason.startsWith('footer'))) fired.add('R11');
 
@@ -264,7 +269,8 @@ export function cleanTable(
   }
 
   const rejected: RejectedRow[] = scan.rejected;
-  const rowsIn = raw.rows.length - (columnsKnown || scan.headerIndex < 0 ? 0 : 1);
+  const headerConsumed = !columnsKnown && scan.headerIndex >= 0 ? 1 : 0;
+  const rowsIn = raw.rows.length + readerRejected.length - headerConsumed;
 
   if (rows.length === 0) {
     throw new Error(rowsIn === 0 ? 'No data rows could be produced from this file' : 'All rows were empty after cleaning');

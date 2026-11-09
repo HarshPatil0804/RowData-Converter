@@ -57,6 +57,8 @@ export interface InjectContext {
   overlapColumns: Set<number>;
   /** Rows inserted after the header (single-cell lines). */
   preamble: Cell[][];
+  /** Junk lines inserted between data rows: `after` = data row index. */
+  interior: { after: number; row: Cell[] }[];
   /** Rows appended after the data (single-cell lines). */
   footer: Cell[][];
   /** Net rows added that survive cleaning (conflicting copies). */
@@ -531,8 +533,15 @@ const pairComposite: Injector = {
   name: 'A / B composite',
   phase: 'columns',
   apply(ctx) {
+    // A cell that already carries `key=value` or a `;` list belongs to R5's
+    // packed branch; joining it would produce a value no injector models.
+    const unpacked = (index: number): boolean =>
+      ctx.rows.every((row) => {
+        const cell = row[ctx.position[index]];
+        return cell === null || cell === undefined || !/[;=]/.test(String(cell));
+      });
     const usable = cleanTextColumns(ctx, true).filter(
-      (index) => ctx.position[index] >= 0 && !ctx.overlapColumns.has(index),
+      (index) => ctx.position[index] >= 0 && !ctx.overlapColumns.has(index) && unpacked(index),
     );
     if (usable.length < 2) return;
     const [first, second] = ctx.rng.shuffle(usable).slice(0, 2);
@@ -672,6 +681,91 @@ const footer: Injector = {
   },
 };
 
+/**
+ * S4 – junk that carries FOREIGN padding. Exports pad banner, metadata, error
+ * and summary lines with whichever delimiter the tool was configured with, not
+ * necessarily the one the table uses; those padding delimiters must never vote
+ * for the structure. Lines land at the top, inside and at the end of the data.
+ */
+const junkPadding: Injector = {
+  name: 'junk padding',
+  phase: 'rows',
+  apply(ctx) {
+    const padded = (text: string): Cell[] => {
+      const pad = ctx.rng.pick([',', ';', '\t', '|']);
+      const times = ctx.rng.int(1, 3);
+      return [`${text}${pad.repeat(times)}`];
+    };
+    ctx.preamble.push(
+      padded('RAW EXPORT - GENERATED REPORT - CONFIDENTIAL'),
+      padded('Export Date: 2027-01-01'),
+    );
+    // Small exports are the worst case: the banner block can be as large as the
+    // table itself (a six-row pipe export with six padding lines). The junk is
+    // spread over the middle and the end so every phase sees it.
+    const count = Math.max(2, ctx.rows.length - 2);
+    const payloads = [
+      'ERR_ROW_9999_SKIPPED_SYSTEM_CORRUPT',
+      'TOTAL AMOUNT REPORTED: 1234.56',
+      'SYSTEM NOTE: export truncated by upstream feed',
+      'Prepared by: Automated Export',
+    ];
+    for (let index = 0; index < count; index += 1) {
+      const at = ctx.rng.int(0, Math.max(0, ctx.rows.length - 1));
+      ctx.interior.push({ after: at, row: padded(payloads[index % payloads.length] as string) });
+    }
+    ctx.footer.push(padded('SYSTEM NOTE: export truncated by upstream feed'));
+  },
+};
+
+/** Cells that carry spaces around every delimiter (" 1 , 2 , 3 "). */
+const delimiterSpacing: Injector = {
+  name: 'delimiter spacing',
+  phase: 'value',
+  apply(ctx) {
+    const spaced = (cell: Cell): Cell =>
+      cell === null || cell === undefined || cell === '' ? cell : ` ${String(cell)} `;
+    ctx.header = ctx.header.map((name) => ` ${name} `);
+    ctx.rows = ctx.rows.map((row) => row.map(spaced));
+  },
+};
+
+/**
+ * S5 – one composite column joined by DIFFERENT separators row by row
+ * ("North - COMPLETED", "Europe / completed", "Asia | PENDING").
+ * The header names both halves with one of the same separators.
+ */
+const mixedComposite: Injector = {
+  name: 'mixed composite separators',
+  phase: 'columns',
+  apply(ctx) {
+    const unpacked = (index: number): boolean =>
+      ctx.rows.every((row) => {
+        const cell = row[ctx.position[index]];
+        return cell === null || cell === undefined || !/[;=]/.test(String(cell));
+      });
+    const usable = cleanTextColumns(ctx, true).filter(
+      (index) => ctx.position[index] >= 0 && !ctx.overlapColumns.has(index) && unpacked(index),
+    );
+    if (usable.length < 2) return;
+    const [first, second] = ctx.rng.shuffle(usable).slice(0, 2);
+    const lo = Math.min(first, second);
+    const hi = Math.max(first, second);
+    const separators = [' - ', ' / ', ' | ', ' : '];
+    const atLo = ctx.position[lo];
+    const atHi = ctx.position[hi];
+
+    ctx.header[atLo] = `${ctx.header[atLo]}${ctx.rng.pick(separators)}${ctx.header[atHi]}`;
+    ctx.rows.forEach((row) => {
+      const left = row[atLo];
+      const right = row[atHi];
+      const separator = ctx.rng.pick(separators);
+      row[atLo] = left === null || right === null ? null : `${String(left)}${separator}${String(right)}`;
+    });
+    dropColumn(ctx, hi);
+  },
+};
+
 const blankRows: Injector = {
   name: 'blank rows',
   phase: 'rows',
@@ -717,8 +811,11 @@ export const INJECTORS: Injector[] = [
   missingIds,
   multiItem,
   overlappingCategory,
+  junkPadding,
+  delimiterSpacing,
   packedKv,
   pairComposite,
+  mixedComposite,
   parenQualifier,
   conflictingDuplicates,
   exactDuplicates,
@@ -745,15 +842,26 @@ export function lineOf(cells: Cell[], delimiterChar: string): string {
   return cells.map((cell) => escapeCell(cell, delimiterChar)).join(delimiterChar);
 }
 
-/** Build the messy file exactly as a user would export it. */
-export function serialize(ctx: InjectContext): string {
+/**
+ * The file's lines, exactly as they are written. Shared with the runner so the
+ * expected junk-line count can never drift from the real serialization.
+ */
+export function serialLines(ctx: InjectContext): string[] {
   const delimiterChar = ctx.delimiter ?? ',';
   const lines: string[] = [];
   for (const row of ctx.preamble) lines.push(lineOf(row, delimiterChar));
   lines.push(lineOf(ctx.header as unknown as Cell[], delimiterChar));
-  for (const row of ctx.rows) lines.push(lineOf(row, delimiterChar));
+  ctx.rows.forEach((row, index) => {
+    lines.push(lineOf(row, delimiterChar));
+    for (const entry of ctx.interior) if (entry.after === index) lines.push(lineOf(entry.row, delimiterChar));
+  });
   for (const row of ctx.footer) lines.push(lineOf(row, delimiterChar));
+  return lines;
+}
 
+/** Build the messy file exactly as a user would export it. */
+export function serialize(ctx: InjectContext): string {
+  const lines = serialLines(ctx);
   const text = ctx.mixedNewlines
     ? lines.map((line, index) => (index % 2 === 0 ? `${line}\r\n` : `${line}\n`)).join('')
     : lines.join('\n');
