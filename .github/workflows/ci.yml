@@ -38,6 +38,7 @@ jobs:
           set -euo pipefail
           test -f dist/version.json
           test -f dist/integrity.json
+          test -s dist/THIRD_PARTY_NOTICES.txt
           cat dist/version.json
           grep -q "<meta name=\"build\"" dist/index.html
           node -e '
@@ -104,6 +105,11 @@ jobs:
           test -f public/tessdata/eng.traineddata.gz
       - name: Every runtime dependency is reviewed
         run: npm run deps:check
+      # The licence gate: every production dependency must carry a licence from
+      # security/allowed-licenses.json, and THIRD_PARTY_NOTICES.md must match the
+      # tree. Widening the allowlist is an explicit edit of that file.
+      - name: Every production licence is allowlisted, and the notices are current
+        run: npm run licenses:check
       - name: No high-severity advisory in production dependencies
         run: npm run audit:prod
       - name: Rendering-safety lint rules (eval, Function, innerHTML, dangerouslySetInnerHTML)

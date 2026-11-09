@@ -4,7 +4,7 @@
   "outputDirectory": "dist",
   "rewrites": [
     {
-      "source": "/((?!version\\.json$|integrity\\.json$|robots\\.txt$|sw\\.js$|assets/|tess/|tessdata/).*)",
+      "source": "/((?!version\\.json$|integrity\\.json$|robots\\.txt$|THIRD_PARTY_NOTICES\\.txt$|sw\\.js$|assets/|tess/|tessdata/).*)",
       "destination": "/index.html"
     }
   ],

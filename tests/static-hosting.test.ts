@@ -118,6 +118,21 @@ describe('static hosting', () => {
     expect(rewrites.map((rule) => rule.destination)).toEqual(['/index.html']);
   }, 60_000);
 
+  it('ships the third-party notices and lists them in the integrity manifest', () => {
+    const notices = path.join(DIST, 'THIRD_PARTY_NOTICES.txt');
+    expect(fs.existsSync(notices), 'dist/THIRD_PARTY_NOTICES.txt must be built').toBe(true);
+    const text = fs.readFileSync(notices, 'utf8');
+    expect(text.startsWith('# Third-party notices')).toBe(true);
+    expect(text).toContain('MIT License');
+    expect(text).toContain('Apache-2.0');
+    expect(text).toMatch(/Tesseract English language data/);
+
+    const manifest = JSON.parse(fs.readFileSync(path.join(DIST, 'integrity.json'), 'utf8')) as {
+      files: Record<string, string>;
+    };
+    expect(Object.keys(manifest.files)).toContain('THIRD_PARTY_NOTICES.txt');
+  }, 60_000);
+
   it('every file in dist is a static file type', () => {
     expect(fs.existsSync(DIST), 'dist/ must be built before this test').toBe(true);
     const files = walk(DIST);

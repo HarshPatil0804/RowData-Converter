@@ -33,8 +33,9 @@ const BASELINE_PATH = 'security/dist-baseline.json';
 const TOKENS = ['fetch(', 'XMLHttpRequest', 'sendBeacon', 'new WebSocket', 'EventSource'];
 const TEXT_EXTENSIONS = new Set(['.js', '.mjs', '.html', '.json', '.css', '.txt']);
 // version.json and integrity.json change on every build by design; nothing is
-// executed from them.
-const SKIP = new Set(['version.json', 'integrity.json']);
+// executed from them. THIRD_PARTY_NOTICES.txt is a licence document: it lists
+// package URLs by requirement and is never loaded by the app.
+const SKIP = new Set(['version.json', 'integrity.json', 'THIRD_PARTY_NOTICES.txt']);
 
 const update = process.argv.includes('--update');
 

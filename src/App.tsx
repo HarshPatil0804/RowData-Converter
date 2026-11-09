@@ -381,7 +381,14 @@ export default function App() {
         </p>
         <p className="muted text-xs text-center mt-1">
           Runs entirely client-side (Vite · React · TypeScript · Tailwind · Web Workers) — deployable as a static
-          site on GitHub Pages or Netlify. build {__BUILD_HASH__}
+          site on GitHub Pages or Netlify. build {__BUILD_HASH__}{' · '}
+          <a
+            className="underline underline-offset-2 hover:text-slate-700 dark:hover:text-slate-300"
+            href="./THIRD_PARTY_NOTICES.txt"
+            data-testid="licenses-link"
+          >
+            Licenses
+          </a>
         </p>
       </footer>
     </div>

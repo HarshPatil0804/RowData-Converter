@@ -1,7 +1,7 @@
 Quarterly customer follow-ups
 
-Alice Johnson is our main contact at Acme Corp. You can reach her at alice.johnson@acme.com or +1 415 555 0132. Her account reference is AC-44719 and the renewal amount is $12,400.00 due 2024-03-15.
+Alice Johnson is our main contact at Acme Corp. You can reach her at alice.johnson@acme.example or +1 415 555 0132. Her account reference is AC-44719 and the renewal amount is $12,400.00 due 2024-03-15.
 
-Bob Reyes <bob.reyes@globex.io> handles billing questions. Call him on +44 20 7946 0958 or write to bob.reyes@globex.io. The last invoice totalled $860.50 and is now 45 days overdue.
+Bob Reyes <bob.reyes@globex.example> handles billing questions. Call him on +44 20 7946 0958 or write to bob.reyes@globex.example. The last invoice totalled $860.50 and is now 45 days overdue.
 
 For general support email support@example.com or visit https://help.example.com/portal. Ticket volumes average 1,250 per week across all regions.

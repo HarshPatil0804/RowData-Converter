@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "note": "Licences a production dependency may carry. This file IS the allowlist: CI (npm run licenses:check) fails on anything not covered here, so changing what is accepted requires editing this file in the same commit, where a reviewer can see it.",
+  "allow": [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "0BSD",
+    "Zlib",
+    "Python-2.0"
+  ],
+  "choices": {
+    "jszip": {
+      "license": "MIT",
+      "reason": "Dual licensed (MIT OR GPL-3.0-or-later). This project ships it under the MIT option."
+    }
+  },
+  "overrides": {
+    "duck": {
+      "license": "BSD-2-Clause",
+      "reason": "Its package.json says the deprecated string \"BSD\" and its LICENSE file is the 2-clause BSD text."
+    }
+  }
+}

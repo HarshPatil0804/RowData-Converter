@@ -1,9 +1,16 @@
 {
   "name": "unstructured-to-structured",
   "private": true,
-  "version": "1.0.0",
+  "version": "0.1.0",
   "type": "module",
   "description": "Fully automated, 100% in-browser unstructured → structured data converter (Vite + React + TS + Tailwind)",
+  "license": "MIT",
+  "author": "HarshPatil0804",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/HarshPatil0804/RowData-Converter.git"
+  },
+  "homepage": "https://row-data-converter.vercel.app",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
@@ -21,7 +28,9 @@
     "deps:check": "node scripts/deps-report.mjs --check",
     "scan:dist": "node scripts/scan-dist.mjs",
     "audit:prod": "npm audit --omit=dev --audit-level=high",
-    "verify-live": "node scripts/verify-live.mjs"
+    "verify-live": "node scripts/verify-live.mjs",
+    "licenses": "node scripts/licenses.mjs",
+    "licenses:check": "node scripts/check-licenses.mjs && node scripts/licenses.mjs --check"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

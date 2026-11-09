@@ -1,6 +1,6 @@
 import { execSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
@@ -39,6 +39,17 @@ export default defineConfig({
   plugins: [
     react(),
     tailwindcss(),
+    {
+      // The licence record is generated (npm run licenses) and must ship with
+      // the site, so it is copied before the integrity chain hashes dist/.
+      name: 'third-party-notices',
+      writeBundle() {
+        if (!existsSync('THIRD_PARTY_NOTICES.md')) {
+          throw new Error('THIRD_PARTY_NOTICES.md is missing — run `npm run licenses`');
+        }
+        copyFileSync('THIRD_PARTY_NOTICES.md', 'dist/THIRD_PARTY_NOTICES.txt');
+      },
+    },
     {
       name: 'build-stamp',
       transformIndexHtml() {

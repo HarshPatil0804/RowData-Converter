@@ -400,12 +400,12 @@
         [
           0,
           0,
-          "Alice Johnson is our main contact at Acme Corp. You can reach her at alice.johnson@acme.com or +1 415 555 0132. Her account reference is AC-44719 and the renewal amount is $12,400.00 due 2024-03-15."
+          "Alice Johnson is our main contact at Acme Corp. You can reach her at alice.johnson@acme.example or +1 415 555 0132. Her account reference is AC-44719 and the renewal amount is $12,400.00 due 2024-03-15."
         ],
         [
           1,
           1,
-          "bob.reyes@globex.io"
+          "bob.reyes@globex.example"
         ],
         [
           2,

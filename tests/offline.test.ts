@@ -23,7 +23,11 @@ const ALLOWED = [
   /^https?:\/\/localhost/,
   // Self-referential link/og:image tags in index.html: the page pointing at
   // its own deployment is not a call out to a third party.
-  /^https:\/\/row-data-converter(-[a-z0-9]+)?\.vercel\.app\//,
+  /^https:\/\/row-data-converter(-[a-z0-9]+)?\.vercel\.app(?:\/.*)?$/,
+  // package.json metadata written for the MIT release: where the source lives
+  // and where the app is deployed. Metadata is read by humans and by npm, never
+  // by the page; the shipped bundle is scanned separately by scan:dist.
+  /^https:\/\/github\.com\/HarshPatil0804\/RowData-Converter(?:\.git)?$/,
   // The SheetJS tarball in package.json: a *build-time* dependency source
   // (npm ci fetches it), never reachable from the browser. That the bundle
   // contains no such URL is proven separately by the dist network scan in
