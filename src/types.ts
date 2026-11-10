@@ -64,7 +64,16 @@ export interface RejectedRow {
 export interface ReviewItem {
   /** Stable id, e.g. "date_order:visit_date:numeric-/-4" or "value_fill:city". */
   id: string;
-  kind: 'date_order' | 'value_fill' | 'missing_id' | 'overlap' | 'packed_split';
+  kind:
+    | 'date_order'
+    | 'value_fill'
+    | 'missing_id'
+    | 'overlap'
+    | 'packed_split'
+    | 'serial_dates'
+    | 'parse_gap'
+    | 'similar_values'
+    | 'table_split';
   /** Column the decision belongs to. */
   column: string;
   /** Row the decision belongs to (null = whole column). */
@@ -180,6 +189,10 @@ export interface FileReport {
   spelledNumbers: number;
   /** R18 – values that contain other values of the same column. */
   overlapping: OverlapEntry[];
+  /** T1 – per-column parse rate for typed columns (parsed / present). */
+  parseRates: { column: string; parsed: number; total: number; rate: number }[];
+  /** T2–T5, N1–N3 – what was rewritten into the column's type, and how much. */
+  conversions: { column: string; kind: string; count: number }[];
   notes: string[];
 }
 

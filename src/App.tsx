@@ -262,7 +262,7 @@ export default function App() {
             <div className="leading-tight">
               <h1 className="text-base font-bold">Unstructured → Structured</h1>
               <p className="muted text-xs hidden sm:block">
-                Any file in, clean table out — 100% in your browser
+                Messy table in, clean table out — 100% in your browser
               </p>
             </div>
           </div>

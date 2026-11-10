@@ -1,6 +1,6 @@
 import type { Cell, OverlapEntry, Reconciliation, ValueMapping } from '../types';
-import { categoryKey, cleanText, isNullSentinel } from '../lib/strings';
-import { parseNumberValue } from '../lib/numbers';
+import { categoryKey, cleanText, isNullSentinel, mergeKey } from '../lib/strings';
+import { parseNumberValue, spelledToNumber } from '../lib/numbers';
 
 /**
  * The rest of the clean-stage rules:
@@ -51,55 +51,6 @@ export function clearSystemCells(columns: string[], rows: Cell[][], systemRows: 
 // ------------------------------------------------------------------ R4 ----
 
 // ------------------------------------------------------------------ R13 ----
-
-const NUMBER_WORDS: Record<string, number> = {
-  zero: 0, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7,
-  eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13,
-  fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18,
-  nineteen: 19, twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60,
-  seventy: 70, eighty: 80, ninety: 90,
-};
-
-/**
- * R13 – a value written out in words ("Twelve", "twenty five", "FORTY").
- * Only a value that is *nothing but* number words parses, so prose such as
- * "one more thing" never becomes a number. Returns null otherwise.
- */
-export function spelledToNumber(value: string): number | null {
-  const words = value
-    .trim()
-    .toLowerCase()
-    .replace(/[-\u2013\u2014]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .split(' ')
-    .filter((word) => word !== '' && word !== 'and');
-  if (words.length === 0 || words.length > 6) return null;
-
-  let total = 0;
-  let current = 0;
-  let matched = false;
-  for (const word of words) {
-    if (word in NUMBER_WORDS) {
-      const value = NUMBER_WORDS[word];
-      // "twenty five" adds; "one two" would too – words are read as a sum of
-      // tens/units, which is unambiguous for the forms R13 promises.
-      current += value;
-      matched = true;
-    } else if (word === 'hundred') {
-      if (current === 0) return null;
-      current *= 100;
-      matched = true;
-    } else if (word === 'thousand') {
-      if (current === 0) return null;
-      total += current * 1000;
-      current = 0;
-      matched = true;
-    } else {
-      return null;
-    }
-  }
-  return matched ? total + current : null;
-}
 
 /**
  * A leading "+" means phone/reference-like text (R4 keeps it as text), so it
@@ -222,10 +173,11 @@ function collapse(value: string): string {
 }
 
 function upperSnake(value: string): string {
-  return value
-    .replace(/[^A-Za-z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '')
-    .toUpperCase();
+  // Separators *between* alphanumerics become underscores; a leading or
+  // trailing symbol is part of the value ("B+" stays "B+", "Delivered-" stays
+  // "DELIVERED-"), which is what S1 is about.
+  const stepped = value.replace(/([\p{L}\p{N}])[\s_/.;-]+(?=[\p{L}\p{N}])/gu, '$1_');
+  return stepped.replace(/[\s]+/g, '_').toUpperCase();
 }
 
 function titleCase(value: string): string {
@@ -239,6 +191,11 @@ export interface CategoryConversion {
   values: Cell[];
   mappings: ValueMapping[];
   conversions: number;
+  /**
+   * S1 – pairs/sets that differ only by a leading or trailing symbol. They are
+   * never merged; each is listed here so the report can say so.
+   */
+  similar: { values: string[]; count: number }[];
 }
 
 /**
@@ -250,7 +207,7 @@ export interface CategoryConversion {
 export function isCategoryColumn(values: Cell[]): boolean {
   const strings = values.filter((value): value is string => typeof value === 'string' && value.trim() !== '');
   if (strings.length === 0) return false;
-  const keys = new Set(strings.map(categoryKey));
+  const keys = new Set(strings.map(mergeKey));
   return keys.size <= Math.max(3, Math.floor(values.length * 0.5));
 }
 
@@ -267,14 +224,16 @@ export function normalizeCategories(
 ): CategoryConversion {
   const strings = values.filter((value): value is string => typeof value === 'string' && value.trim() !== '');
   const out = values.map((value) => (typeof value === 'string' ? collapse(value) : value));
-  if (strings.length === 0) return { values: out, mappings: [], conversions: 0 };
+  if (strings.length === 0) return { values: out, mappings: [], conversions: 0, similar: [] };
 
   // Only true categories: few distinct folded keys relative to the row count.
+  // S1 – the key only absorbs case, whitespace and formatting separators, so
+  // "B+", "B" and "B-" stay three values.
   const groups = new Map<string, Map<string, number>>();
   const order: string[] = [];
   for (const text of strings) {
     const form = collapse(text);
-    const key = categoryKey(form);
+    const key = mergeKey(form);
     const bucket = groups.get(key);
     if (bucket) bucket.set(form, (bucket.get(form) ?? 0) + 1);
     else {
@@ -283,7 +242,21 @@ export function normalizeCategories(
     }
   }
   const maxKeys = Math.max(3, Math.floor(values.length * 0.5));
-  if (groups.size > maxKeys) return { values: out, mappings: [], conversions: 0 };
+  if (groups.size > maxKeys) return { values: out, mappings: [], conversions: 0, similar: [] };
+
+  // S1 – values that a symbol drop would merge are listed for review instead.
+  const similar = new Map<string, { values: Map<string, number>; count: number }>();
+  for (const text of strings) {
+    const form = collapse(text);
+    const loose = categoryKey(form);
+    const bucket = similar.get(loose) ?? { values: new Map<string, number>(), count: 0 };
+    bucket.values.set(form, (bucket.values.get(form) ?? 0) + 1);
+    bucket.count += 1;
+    similar.set(loose, bucket);
+  }
+  const similarGroups = [...similar.values()]
+    .filter((group) => group.values.size > 1)
+    .map((group) => ({ values: [...group.values.keys()].sort(), count: group.count }));
 
   const role = columnRole(name, strings, forceTitle);
   const canonical = new Map<string, string>();
@@ -306,7 +279,7 @@ export function normalizeCategories(
 
   const mapped = (raw: string): string => {
     const form = collapse(raw);
-    const key = categoryKey(form);
+    const key = mergeKey(form);
     const base = canonical.get(key) ?? form;
     let next = base;
     if (role === 'status') next = upperSnake(base);
@@ -325,7 +298,7 @@ export function normalizeCategories(
   }
   mappings.sort((a, b) => b.count - a.count);
 
-  return { values: result, mappings, conversions };
+  return { values: result, mappings, conversions, similar: similarGroups };
 }
 
 // ------------------------------------------------------------------ R9 ----

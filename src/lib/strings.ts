@@ -72,10 +72,42 @@ function stripWrappingQuotes(value: string): string {
 }
 
 /**
- * Identity used wherever two category values are compared (R6 clustering,
- * invariant 4): case, spacing and punctuation are folded away, so "Paid",
- * "PAID ", "paid." and "P-a-i-d" are one value while "Emergency" and
- * "Emergency Care" stay apart.
+ * R6 identity for clustering two spellings of one category.
+ *
+ * Only formatting may merge:
+ *   - letter case ("Paid" / "PAID" / "paid"),
+ *   - surrounding or repeated whitespace,
+ *   - a separator (space, hyphen, underscore, slash) *between alphanumerics*.
+ *
+ * A leading or trailing symbol is significant ("B+", "B-" and "B" are three
+ * values, "A+" is not "A"), and a hyphen between a letter and a following digit
+ * is significant too ("Q-1" is not "Q1", "A-1" is not "A1") because that is
+ * where identifiers differ. A digit followed by a letter is formatting
+ * ("10-A" = "10 A" = "10A" = "10-a").
+ */
+export function mergeKey(value: string): string {
+  const collapsed = cleanText(value).trim().replace(/\s+/g, ' ').toLowerCase();
+  let out = '';
+  for (let index = 0; index < collapsed.length; index += 1) {
+    const char = collapsed[index] as string;
+    if (char === ' ' || char === '-' || char === '_' || char === '/') {
+      const before = collapsed[index - 1] ?? '';
+      const after = collapsed[index + 1] ?? '';
+      const betweenAlnum = /[\p{L}\p{N}]/u.test(before) && /[\p{L}\p{N}]/u.test(after);
+      // letter → digit is an identifier boundary (Q-1 ≠ Q1); everything else
+      // between alphanumerics is formatting.
+      const identifierBoundary = /\p{L}/u.test(before) && /\p{N}/u.test(after);
+      if (betweenAlnum && !identifierBoundary) continue;
+    }
+    out += char;
+  }
+  return out;
+}
+
+/**
+ * Punctuation-free identity. Used for "does this value contain another value"
+ * (R18) and for *detecting* pairs that a symbol drop would merge – never for
+ * deciding what to merge.
  */
 export function categoryKey(value: string): string {
   return cleanText(value)

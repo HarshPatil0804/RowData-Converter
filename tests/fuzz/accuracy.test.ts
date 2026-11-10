@@ -26,16 +26,19 @@ interface Aggregate {
   match: number;
   losses: number;
   reviewGaps: number;
+  /** Columns no injector touched, checked byte-for-byte against ground truth. */
+  unrelated: number;
 }
 
 function aggregate(): Aggregate {
-  return { cases: 0, cells: 0, match: 0, losses: 0, reviewGaps: 0 };
+  return { cases: 0, cells: 0, match: 0, losses: 0, reviewGaps: 0, unrelated: 0 };
 }
 
 function fold(into: Aggregate, result: CaseResult): void {
   into.cases += 1;
   into.cells += result.cellsTotal;
   into.match += result.cellsMatch;
+  into.unrelated += result.unrelatedColumns;
   if (result.rowLoss) into.losses += 1;
   if (result.reviewMissing.length > 0) into.reviewGaps += 1;
 }
@@ -81,11 +84,16 @@ describe('fuzz accuracy table', () => {
       }
 
       // ---- random combinations of exactly 4 injectors, mixed phases ----
+      // "second table" stays out of combinations: the footer/summary injectors
+      // describe the whole file, and a file with two tables genuinely has no
+      // single row count for the harness to hold it to. The class is covered by
+      // its single-injector cases above and by tests/tables.test.ts.
+      const COMBO_NAMES = INJECTOR_NAMES.filter((name) => name !== 'second table');
       const comboSeeds = Math.max(seedCount, 2);
       for (const domain of DOMAINS) {
         for (let pick = 0; pick < 4; pick += 1) {
           const rng = makeRng(0xc0ffee + pick * 31 + DOMAINS.indexOf(domain));
-          const chosen = rng.pickMany(INJECTOR_NAMES, 4);
+          const chosen = rng.pickMany(COMBO_NAMES, 4);
           const key = chosen.join(' + ');
           const agg = combos.get(key) ?? aggregate();
           for (let seed = 1; seed <= comboSeeds; seed += 1) {
@@ -114,13 +122,19 @@ describe('fuzz accuracy table', () => {
         );
       }
       lines.push('', '=== Fuzz accuracy table (combinations of 4 injectors) ===');
-      lines.push('combination                                          cases  accuracy  rowLoss');
+      lines.push('combination                                          cases  accuracy  rowLoss  unrelated');
+      let unrelatedTotal = 0;
       for (const [key, agg] of [...combos.entries()].sort()) {
+        unrelatedTotal += agg.unrelated;
         lines.push(
-          `${key.padEnd(50)} ${String(agg.cases).padStart(5)}  ${pct(accuracy(agg)).padStart(8)}  ${String(agg.losses).padStart(7)}`,
+          `${key.padEnd(50)} ${String(agg.cases).padStart(5)}  ${pct(accuracy(agg)).padStart(8)}  ` +
+            `${String(agg.losses).padStart(7)}  ${String(agg.unrelated).padStart(9)}`,
         );
       }
       lines.push('', `total seeded cases: ${totalCases}`);
+      lines.push(
+        `unrelated columns verified unchanged across mixed cases: ${unrelatedTotal}`,
+      );
       console.log(lines.join('\n'));
 
       // ---- report failures first so diagnosis is visible -------------------
@@ -148,6 +162,10 @@ describe('fuzz accuracy table', () => {
         expect(agg.losses, 'zero silent row loss (combos)').toBe(0);
         expect(agg.reviewGaps, 'every ambiguity surfaced in Needs review (combos)').toBe(0);
       }
+      // Four injectors at once is where a rule for one column leaks into a
+      // neighbour; the runner already fails such a case, and this asserts the
+      // mixed cases really do leave columns untouched to check.
+      expect(unrelatedTotal, 'mixed cases leave unrelated columns to verify').toBeGreaterThan(0);
 
       expect(failures, `failing cases:\n${failures.slice(0, 20).join('\n')}`).toEqual([]);
     },

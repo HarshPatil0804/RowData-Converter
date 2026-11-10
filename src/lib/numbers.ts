@@ -65,6 +65,55 @@ export function parseNumberValue(value: Cell): number | null {
   return negative ? -n : n;
 }
 
+const NUMBER_WORDS: Record<string, number> = {
+  zero: 0, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7,
+  eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13,
+  fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18,
+  nineteen: 19, twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60,
+  seventy: 70, eighty: 80, ninety: 90,
+};
+
+/**
+ * R13 – a value written out in words ("Twelve", "twenty five", "FORTY").
+ * Only a value that is *nothing but* number words parses, so prose such as
+ * "one more thing" never becomes a number. Returns null otherwise.
+ */
+export function spelledToNumber(value: string): number | null {
+  const words = value
+    .trim()
+    .toLowerCase()
+    .replace(/[-\u2013\u2014]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .split(' ')
+    .filter((word) => word !== '' && word !== 'and');
+  if (words.length === 0 || words.length > 6) return null;
+
+  let total = 0;
+  let current = 0;
+  let matched = false;
+  for (const word of words) {
+    if (word in NUMBER_WORDS) {
+      const value = NUMBER_WORDS[word];
+      // "twenty five" adds; "one two" would too – words are read as a sum of
+      // tens/units, which is unambiguous for the forms R13 promises.
+      current += value;
+      matched = true;
+    } else if (word === 'hundred') {
+      if (current === 0) return null;
+      current *= 100;
+      matched = true;
+    } else if (word === 'thousand') {
+      if (current === 0) return null;
+      total += current * 1000;
+      current = 0;
+      matched = true;
+    } else {
+      return null;
+    }
+  }
+  return matched ? total + current : null;
+}
+
 /** True when the raw string looks numeric (used for type inference). */
 export function looksNumeric(value: string): boolean {
   return parseNumberValue(value) !== null;

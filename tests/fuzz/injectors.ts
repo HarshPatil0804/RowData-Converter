@@ -33,6 +33,12 @@ export interface InjectExpectations {
   rowCountControl?: boolean;
   /** R18: an overlapping combination value must be listed for review. */
   overlap?: boolean;
+  /** S1: symbol-only variants must be listed as "review: similar values". */
+  similarValues?: boolean;
+  /** S3: how many repeated header rows were injected. */
+  repeatedHeader?: number;
+  /** S2: the second table appended to the file. */
+  secondTable?: { header: string[]; expected: Cell[][] };
 }
 
 export interface InjectContext {
@@ -63,6 +69,8 @@ export interface InjectContext {
   footer: Cell[][];
   /** Net rows added that survive cleaning (conflicting copies). */
   netRowAdds: number;
+  /** S2 – a second table written after the data, with its own header. */
+  appendTable?: { header: Cell[]; rows: Cell[][] };
   delimiter?: string;
   bom?: boolean;
   mixedNewlines?: boolean;
@@ -72,6 +80,13 @@ export interface InjectContext {
 export interface Injector {
   name: string;
   phase: InjectorPhase;
+  /**
+   * Runs after the other injectors of the same phase. Typing injectors use it:
+   * a column that is rewritten into "Y"/"N" and then case-mangled is still one
+   * vocabulary family, but a column that is only half rewritten is not — and
+   * that is a negative control, not a fair case.
+   */
+  late?: boolean;
   apply(ctx: InjectContext): void;
 }
 
@@ -187,7 +202,9 @@ const quotesInjector: Injector = {
   apply(ctx) {
     ctx.rows = ctx.rows.map((row) =>
       row.map((cell) => {
-        if (cell === null || !ctx.rng.chance(0.5)) return cell;
+        // Booleans stay booleans: quoting one turns a typed column into text,
+        // which is a different (negative) case, not the one being tested here.
+        if (cell === null || typeof cell === 'boolean' || !ctx.rng.chance(0.5)) return cell;
         const quote = ctx.rng.chance(0.5) ? '"' : "'";
         return `${quote}${String(cell)}${quote}`;
       }),
@@ -550,12 +567,15 @@ const pairComposite: Injector = {
     const separator = ctx.rng.chance(0.5) ? ' / ' : ' - ';
     const atLo = ctx.position[lo];
     const atHi = ctx.position[hi];
+    // A quoted half would leave a dangling quote in the joined value.
+    const bare = (cell: Cell): string =>
+      typeof cell === 'string' ? cell.replace(/^(["'])([\s\S]*)\1$/, '$2') : String(cell);
 
     ctx.header[atLo] = `${ctx.header[atLo]}${separator}${ctx.header[atHi]}`;
     ctx.rows.forEach((row) => {
       const left = row[atLo];
       const right = row[atHi];
-      row[atLo] = left === null || right === null ? null : `${String(left)}${separator}${String(right)}`;
+      row[atLo] = left === null || right === null ? null : `${bare(left)}${separator}${bare(right)}`;
     });
     dropColumn(ctx, hi);
   },
@@ -671,7 +691,7 @@ const footer: Injector = {
   apply(ctx) {
     ctx.footer.push(
       [''],
-      [`Total rows: ${ctx.gt.rows.length + ctx.netRowAdds}`],
+      ['Total rows: @CLEAN'],
       ['Prepared by: Automated Export'],
       ['Generated on 2027-01-01 06:00'],
       ['END'],
@@ -755,12 +775,16 @@ const mixedComposite: Injector = {
     const atLo = ctx.position[lo];
     const atHi = ctx.position[hi];
 
+    // A quoted half would leave a dangling quote in the joined value; the
+    // composite is about the separator, not about quote stripping.
+    const bare = (cell: Cell): string =>
+      typeof cell === 'string' ? cell.replace(/^(["'])([\s\S]*)\1$/, '$2') : String(cell);
     ctx.header[atLo] = `${ctx.header[atLo]}${ctx.rng.pick(separators)}${ctx.header[atHi]}`;
     ctx.rows.forEach((row) => {
       const left = row[atLo];
       const right = row[atHi];
       const separator = ctx.rng.pick(separators);
-      row[atLo] = left === null || right === null ? null : `${String(left)}${separator}${String(right)}`;
+      row[atLo] = left === null || right === null ? null : `${bare(left)}${separator}${bare(right)}`;
     });
     dropColumn(ctx, hi);
   },
@@ -799,6 +823,404 @@ const bomNewlines: Injector = {
   },
 };
 
+// ======================================================================= S1 ====
+
+/** Text columns with few enough distinct values to be categories. */
+function categoryColumns(ctx: InjectContext): number[] {
+  return cleanTextColumns(ctx).filter((index) => {
+    const values = ctx.gt.rows.map((row) => row[index]).filter((value): value is string => typeof value === 'string');
+    const distinct = new Set(values.map((value) => value.toLowerCase())).size;
+    return distinct >= 2 && distinct <= 8 && values.length >= 8;
+  });
+}
+
+/**
+ * S1 – the leading/trailing symbol is significant. "A" becomes "A+" for some
+ * rows and "B" becomes "B-" for others; the pipeline must keep every variant
+ * and list the pair under "review: similar values".
+ */
+const categorySymbols: Injector = {
+  name: 'category symbols',
+  phase: 'value',
+  apply(ctx) {
+    const usable = categoryColumns(ctx).filter((index) => ctx.position[index] >= 0);
+    if (usable.length === 0) return;
+    const gtIndex = ctx.rng.pick(usable);
+    const at = ctx.position[gtIndex];
+    const values = ctx.gt.rows
+      .map((row) => row[gtIndex])
+      .filter((value): value is string => typeof value === 'string');
+    const distinct = [...new Set(values)].sort();
+    const [first, second] = [distinct[0] as string, (distinct[1] ?? distinct[0]) as string];
+    const marks = ['+', '-', '#'];
+    const plus = marks[ctx.rng.int(0, marks.length - 1)] as string;
+    let changed = 0;
+    ctx.rows.forEach((row, index) => {
+      const value = row[at];
+      if (typeof value !== 'string') return;
+      if (value === first && ctx.rng.chance(0.35)) {
+        row[at] = `${value}${plus}`;
+        ctx.expected[index][gtIndex] = `${value}${plus}`;
+        changed += 1;
+      } else if (value === second && ctx.rng.chance(0.25)) {
+        const other = plus === '-' ? '+' : '-';
+        row[at] = `${value}${other}`;
+        ctx.expected[index][gtIndex] = `${value}${other}`;
+        changed += 1;
+      }
+    });
+    // Only demand the review note when a symbol variant actually exists.
+    if (changed > 0) ctx.expect.similarValues = true;
+  },
+};
+
+/**
+ * S1 positive control – case, spacing and a separator between alphanumerics
+ * are formatting, not data: the canonical (most frequent) spelling survives.
+ */
+const categoryFormatting: Injector = {
+  name: 'category formatting',
+  phase: 'value',
+  apply(ctx) {
+    const usable = categoryColumns(ctx).filter((index) => ctx.position[index] >= 0);
+    if (usable.length === 0) return;
+    const gtIndex = ctx.rng.pick(usable);
+    const at = ctx.position[gtIndex];
+    ctx.rows.forEach((row) => {
+      const value = row[at];
+      if (typeof value !== 'string' || !ctx.rng.chance(0.3)) return;
+      const mode = ctx.rng.int(0, 3);
+      if (mode === 0) row[at] = value.toUpperCase();
+      else if (mode === 1) row[at] = `  ${value.toLowerCase()} `;
+      else if (mode === 2 && value.includes(' ')) row[at] = value.replace(/ /g, '-');
+      else if (mode === 3) row[at] = value.replace(/ /g, '  ');
+    });
+  },
+};
+
+// ======================================================================= T2 ====
+
+const SERIAL_EPOCH_MS = Date.UTC(1899, 11, 30);
+
+function excelSerial(iso: string): number {
+  return Math.round((Date.parse(`${iso}T00:00:00Z`) - SERIAL_EPOCH_MS) / 86_400_000);
+}
+
+const grouped = (value: number, decimals = 2): string => {
+  const [whole, fraction] = value.toFixed(decimals).split('.');
+  const withGrouping = (whole as string).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return fraction ? `${withGrouping}.${fraction}` : withGrouping;
+};
+
+/**
+ * T2 – locale affixes on a decimal column: a currency symbol or word, an Indian
+ * "/-" suffix, a period suffix, a Western/Indian grouping. The number itself is
+ * unchanged, so the ground truth stays the number.
+ */
+const numericAffixes: Injector = {
+  name: 'numeric affixes',
+  phase: 'value',
+  late: true,
+  apply(ctx) {
+    const usable = ofKind(ctx, 'number').filter((index) => ctx.position[index] >= 0);
+    if (usable.length === 0) return;
+    const at = ctx.position[ctx.rng.pick(usable)];
+    ctx.rows.forEach((row) => {
+      const value = row[at];
+      if (typeof value !== 'number' || !ctx.rng.chance(0.55)) return;
+      const mode = ctx.rng.int(0, 3);
+      if (mode === 0) row[at] = `\u20b9 ${grouped(value)}`;
+      else if (mode === 1) row[at] = `Rs.${grouped(value)}`;
+      else if (mode === 2) row[at] = `${grouped(value)}/-`;
+      else row[at] = `\u20b9${grouped(value)} per month`;
+    });
+  },
+};
+
+/** T2 – a unit word that recurs across the column is discovered from the data. */
+const numericUnits: Injector = {
+  name: 'numeric units',
+  phase: 'value',
+  late: true,
+  apply(ctx) {
+    const usable = ofKind(ctx, 'number').filter((index) => ctx.position[index] >= 0);
+    if (usable.length === 0) return;
+    const at = ctx.position[ctx.rng.pick(usable)];
+    const unit = ctx.rng.pick(['hrs', 'kg', 'km', 'units']);
+    ctx.rows.forEach((row) => {
+      const value = row[at];
+      if (typeof value !== 'number' || !ctx.rng.chance(0.7)) return;
+      row[at] = `${value} ${unit}`;
+    });
+  },
+};
+
+/** T2 – magnitude suffixes, consistent with the column's own median. */
+const numericMagnitudes: Injector = {
+  name: 'numeric magnitudes',
+  phase: 'value',
+  late: true,
+  apply(ctx) {
+    const usable = ofKind(ctx, 'number').filter((index) => ctx.position[index] >= 0);
+    if (usable.length === 0) return;
+    const at = ctx.position[ctx.rng.pick(usable)];
+    const values = ctx.gt.rows
+      .map((row) => row[at])
+      .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+    if (values.length < 6) return;
+    const max = Math.max(...values);
+    const suffix = max >= 100_000 ? 'k' : 'k';
+    const scale = suffix === 'k' ? 1_000 : 1;
+    let written = 0;
+    ctx.rows.forEach((row) => {
+      const value = row[at];
+      if (typeof value !== 'number' || !ctx.rng.chance(0.5)) return;
+      if (Math.abs(value) < scale * 3) return;
+      // Only write a suffix when it is exact, so the ground truth stays the number.
+      if (value % (scale / 10) !== 0) return;
+      row[at] = `${Math.round((value / scale) * 10) / 10}${suffix}`;
+      written += 1;
+    });
+    if (written < 3) return;
+  },
+};
+
+/**
+ * T1/T5 – a numeric column with a recurring placeholder word. The column stays
+ * numeric, the placeholder becomes null with the word kept in `<col>_note`.
+ */
+const numericPlaceholders: Injector = {
+  name: 'numeric placeholders',
+  phase: 'value',
+  late: true,
+  apply(ctx) {
+    const usable = ofKind(ctx, 'number').filter((index) => ctx.position[index] >= 0);
+    if (usable.length === 0) return;
+    const at = ctx.position[ctx.rng.pick(usable)];
+    const words = ['absent', 'pending', 'missing'];
+    const word = ctx.rng.pick(words);
+    ctx.rows.forEach((row, index) => {
+      const value = row[at];
+      if (typeof value !== 'number' || !ctx.rng.chance(0.22)) return;
+      row[at] = word;
+      ctx.expected[index][ctx.position.indexOf(at)] = null;
+    });
+  },
+};
+
+// ======================================================================= T3 ====
+
+/** T3(a) – Excel serial numbers inside a date column. */
+const excelSerials: Injector = {
+  name: 'excel serials',
+  phase: 'value',
+  late: true,
+  apply(ctx) {
+    const usable = ofKind(ctx, 'date').filter((index) => ctx.position[index] >= 0);
+    if (usable.length === 0) return;
+    const at = ctx.position[ctx.rng.pick(usable)];
+    // A deterministic third, so the serials stay a minority of the column.
+    ctx.rows.forEach((row, index) => {
+      const value = row[at];
+      if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value) || index % 3 !== 0) return;
+      row[at] = String(excelSerial(value));
+    });
+  },
+};
+
+/** T3(b) – date-time forms: day-first with a 24-hour clock, month name with a clock, AM/PM. */
+const datetimeForms: Injector = {
+  name: 'datetime forms',
+  phase: 'value',
+  late: true,
+  apply(ctx) {
+    const usable = ofKind(ctx, 'date').filter((index) => ctx.position[index] >= 0);
+    if (usable.length === 0) return;
+    const at = ctx.position[ctx.rng.pick(usable)];
+    const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    ctx.rows.forEach((row, index) => {
+      const value = row[at];
+      if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value) || !ctx.rng.chance(0.45)) return;
+      const [year, month, day] = value.split('-').map(Number) as [number, number, number];
+      if (day <= 12) return; // the day proves the dash pattern on its own
+      const hour = ctx.rng.int(0, 23);
+      const minute = ctx.rng.int(0, 59);
+      const hh = String(hour).padStart(2, '0');
+      const mm = String(minute).padStart(2, '0');
+      const mode = ctx.rng.int(0, 2);
+      if (mode === 0) row[at] = `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year} ${hh}:${mm}`;
+      else if (mode === 1) {
+        const hours12 = hour % 12 === 0 ? 12 : hour % 12;
+        const suffix = hour < 12 ? 'AM' : 'PM';
+        row[at] = `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year} ${hours12}:${mm} ${suffix}`;
+      } else row[at] = `${day} ${MONTH_NAMES[month - 1]} ${year} ${hh}:${mm}`;
+      ctx.expected[index][ctx.position.indexOf(at)] = `${value}T${hh}:${mm}`;
+    });
+  },
+};
+
+// ======================================================================= T4 ====
+
+/** T4 – scores written "n/N" with one shared denominator. */
+const scoreFractions: Injector = {
+  name: 'score fractions',
+  phase: 'value',
+  late: true,
+  apply(ctx) {
+    const usable = ofKind(ctx, 'number').filter((index) => ctx.position[index] >= 0);
+    if (usable.length === 0) return;
+    const at = ctx.position[ctx.rng.pick(usable)];
+    const values = ctx.gt.rows
+      .map((row) => row[at])
+      .filter((value): value is number => typeof value === 'number' && Number.isInteger(value));
+    if (values.length < 10) return;
+    const denominator = Math.max(100, Math.ceil(Math.max(...values) / 10) * 10);
+    let written = 0;
+    ctx.rows.forEach((row, index) => {
+      const value = row[at];
+      if (typeof value !== 'number' || !Number.isInteger(value) || index % 4 === 3) return;
+      if (value < 0 || value > denominator) return;
+      row[at] = `${value}/${denominator}`;
+      written += 1;
+    });
+    if (written / ctx.rows.length < 0.5) return;
+  },
+};
+
+// ======================================================================= N1 ====
+
+/** N1 – one boolean vocabulary family, written as text. */
+const booleanVocabulary: Injector = {
+  name: 'boolean vocabulary',
+  phase: 'value',
+  late: true,
+  apply(ctx) {
+    const usable = ofKind(ctx, 'boolean').filter((index) => ctx.position[index] >= 0);
+    if (usable.length === 0) return;
+    const at = ctx.position[ctx.rng.pick(usable)];
+    const family = ctx.rng.pick([
+      ['Y', 'N'],
+      ['yes', 'no'],
+      ['T', 'F'],
+      ['TRUE', 'FALSE'],
+      ['1', '0'],
+    ] as [string, string][]);
+    ctx.rows.forEach((row) => {
+      const value = row[at];
+      if (typeof value !== 'boolean') return;
+      row[at] = value ? family[0] : family[1];
+    });
+  },
+};
+
+// ======================================================================= N2 ====
+
+/** N2 – an email column with case and padding noise. */
+const emails: Injector = {
+  name: 'emails',
+  phase: 'value',
+  late: true,
+  apply(ctx) {
+    const usable = cleanTextColumns(ctx).filter((index) => ctx.position[index] >= 0);
+    if (usable.length === 0) return;
+    const gtIndex = ctx.rng.pick(usable);
+    const at = ctx.position[gtIndex];
+    ctx.rows.forEach((row, index) => {
+      const base = `user${index + 1}.${String(ctx.gt.header[gtIndex] ?? 'x').toLowerCase().replace(/[^a-z]/g, '')}@example.test`;
+      const messy = ctx.rng.int(0, 2);
+      const written = messy === 0 ? base.toUpperCase() : messy === 1 ? ` ${base} ` : base.replace('@', '@').replace(/^./, (c) => c.toUpperCase());
+      row[at] = written;
+      ctx.expected[index][gtIndex] = base;
+    });
+  },
+};
+
+// ======================================================================= N3 ====
+
+/** N3 – phone numbers written with separators, a "00" prefix and one country code. */
+const phones: Injector = {
+  name: 'phones',
+  phase: 'value',
+  late: true,
+  apply(ctx) {
+    const usable = cleanTextColumns(ctx).filter((index) => ctx.position[index] >= 0);
+    if (usable.length === 0) return;
+    const gtIndex = ctx.rng.pick(usable);
+    const at = ctx.position[gtIndex];
+    ctx.rows.forEach((row, index) => {
+      const area = 200 + (index % 700);
+      const line = String(1000 + (index % 9000)).padStart(4, '0');
+      const national = `${String(area).padStart(3, '0')}555${line}`;
+      const mode = ctx.rng.int(0, 2);
+      if (mode === 0) row[at] = `+1 (${String(area).padStart(3, '0')}) 555-${line}`;
+      else if (mode === 1) row[at] = `001-${String(area).padStart(3, '0')}-555-${line}`;
+      else row[at] = `+1 ${String(area).padStart(3, '0')} 555 ${line}`;
+      ctx.expected[index][gtIndex] = national;
+    });
+  },
+};
+
+// ======================================================================= S3 ====
+
+/** S3 – the header repeated mid-file, the way a page break leaks it in. */
+const repeatedHeader: Injector = {
+  name: 'repeated header',
+  phase: 'rows',
+  apply(ctx) {
+    if (ctx.rows.length < 6) return;
+    const at = ctx.rng.int(2, ctx.rows.length - 3);
+    const copy = [...ctx.header];
+    if (ctx.rng.chance(0.5)) {
+      copy.forEach((cell, index) => {
+        if (index % 2 === 0) copy[index] = String(cell).toUpperCase();
+        else copy[index] = ` ${String(cell).toLowerCase()} `;
+      });
+    }
+    ctx.interior.push({ after: at, row: copy });
+    ctx.expect.repeatedHeader = (ctx.expect.repeatedHeader ?? 0) + 1;
+  },
+};
+
+// ======================================================================= S2 ====
+
+/**
+ * S2 – a second table with its own header after the first table's rows. Its
+ * columns are different, so appending its rows under the first header would put
+ * values in the wrong columns.
+ */
+const secondTable: Injector = {
+  name: 'second table',
+  phase: 'rows',
+  apply(ctx) {
+    // Same width as the first table: a narrow block in a wide file is a
+    // different (extractor-level) puzzle, not the two-tables rule under test.
+    const width = Math.max(ctx.header.length, 5);
+    const labels = ['Ticket', 'Opened', 'Queue', 'Waiting Hours', 'Escalated', 'Channel', 'Agent', 'Resolved'];
+    const filler = ['Email', 'Dana', 'Named', 'Checked'];
+    const header: Cell[] = Array.from({ length: width }, (_unused, index) =>
+      index < labels.length ? (labels[index] as string) : (filler[index % filler.length] as string),
+    );
+    const queues = ['Billing', 'Network', 'Hardware'];
+    const expected: Cell[][] = [];
+    const rows: Cell[][] = [];
+    for (let index = 0; index < 12; index += 1) {
+      const date = `2026-0${(index % 9) + 1}-${String((index % 27) + 1).padStart(2, '0')}`;
+      const queue = queues[index % queues.length] as string;
+      const hours = 1 + (index % 9);
+      const escalated = index % 3 === 0;
+      const base: Cell[] = [`T-${900 + index}`, date, queue, hours, escalated];
+      const extra: Cell[] = ['web', 'Dana', 'named', 'checked'];
+      const row: Cell[] = Array.from({ length: width }, (_unused, column) =>
+        column < base.length ? (base[column] as Cell) : (extra[column % extra.length] as Cell),
+      );
+      rows.push(row);
+      expected.push([...row]);
+    }
+    ctx.appendTable = { header, rows };
+    ctx.expect.secondTable = { header: header.map((cell) => String(cell ?? '')), expected };
+  },
+};
+
 export const INJECTORS: Injector[] = [
   caseInjector,
   whitespaceInjector,
@@ -824,6 +1246,20 @@ export const INJECTORS: Injector[] = [
   blankRows,
   delimiterInjector,
   bomNewlines,
+  categorySymbols,
+  categoryFormatting,
+  numericAffixes,
+  numericUnits,
+  numericMagnitudes,
+  numericPlaceholders,
+  excelSerials,
+  datetimeForms,
+  scoreFractions,
+  booleanVocabulary,
+  emails,
+  phones,
+  repeatedHeader,
+  secondTable,
 ];
 
 /** The fixed phase order combinations are applied in. */
@@ -846,6 +1282,51 @@ export function lineOf(cells: Cell[], delimiterChar: string): string {
  * The file's lines, exactly as they are written. Shared with the runner so the
  * expected junk-line count can never drift from the real serialization.
  */
+/**
+ * How many rows the clean output should hold: the expected rows, blank rows
+ * removed and exact duplicates collapsed — the same two things the pipeline
+ * does. The footer's "Total rows: N" control line is written at serialization
+ * time, not at injection time, so an injector that runs after the footer (blank
+ * rows, duplicates) cannot leave the file reporting a stale count.
+ */
+function expectedCleanCount(ctx: InjectContext): number {
+  const isNull = (cell: Cell | undefined): boolean =>
+    cell === null || cell === undefined || (typeof cell === 'string' && cell.trim() === '');
+  const kept = ctx.expected.filter((row) => !row.every(isNull));
+
+  // R14 – a null id gets a generated one, so such a row can never be a duplicate.
+  const idLike = ctx.gt.header
+    .map((name, index) => ({ name, index }))
+    .filter(({ name }) => /(?:^|[_ -])(id|ids|no|num|number|code|key|ref)(?:$|[_ -])/i.test(name))
+    .map(({ index }) => index)
+    .filter((index) => {
+      const values = kept.map((row) => row[index]);
+      return values.some(isNull) && values.some((value) => !isNull(value));
+    });
+
+  const seen = new Set<string>();
+  let count = 0;
+  for (const row of kept) {
+    if (idLike.some((index) => isNull(row[index]))) {
+      count += 1;
+      continue;
+    }
+    const key = row
+      .map((cell) =>
+        typeof cell === 'string'
+          ? cell.trim().toLowerCase().replace(/\s+/g, ' ')
+          : isNull(cell)
+            ? ''
+            : String(cell),
+      )
+      .join('\u0001');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    count += 1;
+  }
+  return count;
+}
+
 export function serialLines(ctx: InjectContext): string[] {
   const delimiterChar = ctx.delimiter ?? ',';
   const lines: string[] = [];
@@ -855,7 +1336,23 @@ export function serialLines(ctx: InjectContext): string[] {
     lines.push(lineOf(row, delimiterChar));
     for (const entry of ctx.interior) if (entry.after === index) lines.push(lineOf(entry.row, delimiterChar));
   });
-  for (const row of ctx.footer) lines.push(lineOf(row, delimiterChar));
+  if (ctx.appendTable) {
+    lines.push(lineOf(ctx.appendTable.header, delimiterChar));
+    for (const row of ctx.appendTable.rows) lines.push(lineOf(row, delimiterChar));
+  }
+  const cleanCount = expectedCleanCount(ctx);
+  for (const row of ctx.footer) {
+    lines.push(
+      lineOf(
+        row.map((cell) =>
+          typeof cell === 'string' && cell.includes('@CLEAN')
+            ? cell.replace('@CLEAN', String(cleanCount))
+            : cell,
+        ),
+        delimiterChar,
+      ),
+    );
+  }
   return lines;
 }
 

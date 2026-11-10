@@ -13,7 +13,16 @@
  */
 const FORMULA_LEAD = /^[=+\-@\t\r]/;
 
+/**
+ * A normalised phone number is "+" followed by digits. A spreadsheet reads that
+ * as a formula for a number, so prefixing it with an apostrophe would turn the
+ * number into text. It is also not an injection: nothing can follow the +
+ * except digits. "+1+1" and every other lead-in still count.
+ */
+const PHONE_LIKE = /^\+\d{7,15}$/;
+
 export function isFormulaLike(value: string): boolean {
+  if (PHONE_LIKE.test(value)) return false;
   return FORMULA_LEAD.test(value);
 }
 

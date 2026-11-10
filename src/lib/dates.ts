@@ -42,11 +42,12 @@ export function parseDateValue(value: Cell): string | null {
     /^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T ](\d{1,2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?\s*(Z|[+-]\d{2}:?\d{2})?)?$/,
   );
   if (iso) {
-    const [, y, mo, d, hh, mm, ss, off] = iso;
+    const [, y, mo, d, hh, mm, , off] = iso;
     const date = buildDate(Number(y), Number(mo), Number(d));
     if (!date) return null;
     if (!hh) return date;
-    const time = `${pad(Number(hh))}:${pad(Number(mm))}:${pad(Number(ss ?? '0'))}`;
+    // ISO 8601 to the minute (T3).
+    const time = `${pad(Number(hh))}:${pad(Number(mm))}`;
     if (!off) return `${date}T${time}`;
     if (off === 'Z') return `${date}T${time}Z`;
     const normalized = off.length === 5 ? `${off.slice(0, 3)}:${off.slice(3)}` : off;
@@ -59,7 +60,15 @@ export function parseDateValue(value: Cell): string | null {
     const date = buildDate(Number(slashIso[1]), Number(slashIso[2]), Number(slashIso[3]));
     if (!date) return null;
     if (!slashIso[4]) return date;
-    return `${date}T${pad(Number(slashIso[4]))}:${pad(Number(slashIso[5]))}:${pad(Number(slashIso[6] ?? '0'))}`;
+    return `${date}T${pad(Number(slashIso[4]))}:${pad(Number(slashIso[5]))}`;
+  }
+
+  // T3(b) – a clock time on the end of any other date shape:
+  // "05/01/2024 14:30", "5 Jan 2024 2:30 PM", "01-05-24 9:15 am".
+  const clock = splitClock(s);
+  if (clock) {
+    const base = parseDateValue(clock.datePart);
+    if (base) return `${base}T${clock.time}`;
   }
 
   // 05/01/2024 · 05-01-2024 · 05.01.2024  (day-first unless the 2nd part > 12)
@@ -79,8 +88,6 @@ export function parseDateValue(value: Cell): string | null {
     }
     const date = buildDate(Number(dmy[3]), second, first);
     if (!date) return null;
-    const time = s.match(/(?:[ ,]+)(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
-    if (time) return `${date}T${pad(Number(time[1]))}:${pad(Number(time[2]))}:${pad(Number(time[3] ?? '0'))}`;
     return date;
   }
 
@@ -136,6 +143,33 @@ export type DayMonthOrder = 'DM' | 'MD';
  */
 export type DateOrderMode = DayMonthOrder | 'auto';
 
+/**
+ * Split a trailing clock time off a date string.
+ * Returns the date part and the time as `HH:mm` (24-hour, to the minute).
+ * "5 Jan 2024 2:30 PM" → { datePart: '5 Jan 2024', time: '14:30' }.
+ */
+export function splitClock(value: string): { datePart: string; time: string } | null {
+  const match = /^(.*?)[T ,]+(\d{1,2})(?::(\d{2}))?(?::\d{2}(?:\.\d+)?)?\s*([ap])\.?\s*m\.?$/i.exec(value);
+  const noMeridiem = match
+    ? null
+    : /^(.*?)[T ,]+(\d{1,2}):(\d{2})(?::\d{2}(?:\.\d+)?)?$/.exec(value);
+  const hit = match ?? noMeridiem;
+  if (!hit) return null;
+  const datePart = (hit[1] as string).trim();
+  if (datePart === '') return null;
+  let hours = Number(hit[2]);
+  const minutes = Number(hit[3] ?? '0');
+  if (match) {
+    const meridiem = (hit[4] as string).toLowerCase();
+    if (meridiem === 'p' && hours < 12) hours += 12;
+    if (meridiem === 'a' && hours === 12) hours = 0;
+  }
+  if (hours > 23 || minutes > 59) return null;
+  // A clock is only a clock when a real date precedes it.
+  if (!/\d/.test(datePart)) return null;
+  return { datePart, time: `${pad(hours)}:${pad(minutes)}` };
+}
+
 /** 2025-06-01 · 2025/06/01 · 2025.06.01 – year first, never ambiguous. */
 const YEAR_FIRST_RE = /^(\d{4})([-/.])(\d{1,2})\2(\d{1,2})$/;
 /** 06-01-2025 · 06/01/2025 · 06.01.25 – separator + shape, order to prove. */
@@ -147,7 +181,10 @@ const NAMED_DAY_RE = /^([a-z]{3,9})[- ,](\d{1,2}),?[- ,](\d{2,4})$/i;
 
 /** Separator + shape identity, e.g. "numeric-/-4" or "numeric--4". */
 export function datePatternKey(value: string): string | null {
-  const s = value.trim();
+  const trimmed = value.trim();
+  // A trailing clock does not change the day/month pattern of the date.
+  const clock = splitClock(trimmed);
+  const s = clock ? clock.datePart : trimmed;
   const yearFirst = YEAR_FIRST_RE.exec(s);
   if (yearFirst) return `year-first${yearFirst[2]}4`;
   const numeric = NUMERIC_RE.exec(s);
@@ -162,7 +199,8 @@ interface NumericSample {
 }
 
 function numericSample(value: string): NumericSample | null {
-  const match = NUMERIC_RE.exec(value.trim());
+  const clock = splitClock(value.trim());
+  const match = NUMERIC_RE.exec(clock ? clock.datePart : value.trim());
   if (!match) return null;
   return { first: Number(match[1]), second: Number(match[3]) };
 }
@@ -273,6 +311,11 @@ export function resolveDates(values: Cell[], mode: DateOrderMode = 'auto'): Date
 
 /** Parse one value honouring an explicit day/month order for numeric shapes. */
 export function parseDateWithOrder(value: string, order: DayMonthOrder): string | null {
+  const clock = splitClock(value.trim());
+  if (clock) {
+    const base = parseDateWithOrder(clock.datePart, order);
+    return base ? `${base}T${clock.time}` : null;
+  }
   const s = value.trim();
   if (!s || s.length > 40) return null;
 

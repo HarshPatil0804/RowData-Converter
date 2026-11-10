@@ -13,6 +13,10 @@ const KIND_LABEL: Record<string, string> = {
   value_fill: 'fill gaps (R9)',
   missing_id: 'missing id (R14)',
   overlap: 'overlapping value (R18)',
+  serial_dates: 'converted from serial (T3)',
+  parse_gap: 'cells left as text (T1)',
+  similar_values: 'similar values (S1)',
+  table_split: 'table split (S2)',
 };
 
 /**

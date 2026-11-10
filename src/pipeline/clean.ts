@@ -13,7 +13,26 @@ import type {
 } from '../types';
 import { cellKey, categoryKey, cleanText, displayCell, isNullSentinel, standardizeNames } from '../lib/strings';
 import { hasCurrencySign, hasPercentSign, parseNumberValue } from '../lib/numbers';
-import { looksLikeDate, resolveDates, type DateOrderMode, type DayMonthOrder } from '../lib/dates';
+import {
+  excelSerialToIso,
+  looksLikeDate,
+  resolveDates,
+  type DateOrderMode,
+  type DayMonthOrder,
+} from '../lib/dates';
+import {
+  DEFAULT_TUNING,
+  booleanFamily,
+  decideType,
+  planEmails,
+  planFractions,
+  isSerialText,
+  planNumeric,
+  planPhones,
+  toBooleanCell,
+  type Tuning,
+  type TuningOverride,
+} from './typing';
 import { generatedNames, padRows } from '../lib/table';
 import { countFormulaLike } from '../lib/formula';
 import { findExportDate, findRowControl, rejectReasons, rejectRows, type HeaderMode } from './reject';
@@ -27,7 +46,6 @@ import {
   findOverlaps,
   findReportedTotal,
   isCategoryColumn,
-  isNumericColumn,
   normalizeCategories,
   planItems,
   reconcile,
@@ -35,7 +53,6 @@ import {
 
 const BOOL_TRUE = /^(true|yes)$/i;
 const BOOL_FALSE = /^(false|no)$/i;
-const MATCH_RATIO = 0.8;
 const SAMPLE_LIMIT = 1000;
 /** A value already written as an ISO date/datetime. */
 const ISO_VALUE_RE = /^\d{4}-\d{2}-\d{2}(?:$|[T ])/;
@@ -49,6 +66,11 @@ export interface CleanOptions {
   dateOrder?: DateOrderMode;
   /** Review items the user accepted – their suggestion is applied on re-run. */
   acceptReviews?: readonly string[];
+  /**
+   * Typing thresholds. Not a UI control: the fuzz harness sweeps four values
+   * per threshold to show the rules do not depend on one of them.
+   */
+  tuning?: TuningOverride;
 }
 
 /** A leading "+" means phone/reference-like text – keep it, never coerce. */
@@ -65,7 +87,7 @@ function sampleOf<T>(values: T[]): T[] {
   return out;
 }
 
-function inferType(values: Cell[]): ColumnType {
+function inferType(values: Cell[], tuning: Tuning = DEFAULT_TUNING): ColumnType {
   const present = values.filter((value) => value !== null);
   if (present.length === 0) return 'text';
   if (present.every((value) => typeof value === 'boolean')) return 'boolean';
@@ -73,11 +95,15 @@ function inferType(values: Cell[]): ColumnType {
   if (present.every((value) => typeof value === 'string')) {
     const sample = sampleOf(present as string[]);
     const booleans = sample.filter((value) => BOOL_TRUE.test(value) || BOOL_FALSE.test(value)).length;
-    if (booleans / sample.length >= MATCH_RATIO) return 'boolean';
+    if (booleans / sample.length >= tuning.booleanMajority) return 'boolean';
     const numbers = sample.filter((value) => numericText(value)).length;
-    if (numbers / sample.length >= MATCH_RATIO) return 'number';
+    if (numbers / sample.length >= tuning.numericMajority) return 'number';
     const dates = sample.filter((value) => looksLikeDate(value)).length;
-    if (dates / sample.length >= MATCH_RATIO) return 'date';
+    // Excel serials are date evidence too (T3), but only alongside real dates:
+    // a column of nothing but five-digit numbers is an id or an amount, never a
+    // date column.
+    const serials = dates > 0 ? sample.filter((value) => isSerialText(value)).length : 0;
+    if ((dates + serials) / sample.length >= tuning.dateMajority) return 'date';
     return 'text';
   }
 
@@ -113,12 +139,9 @@ function convertColumn(values: Cell[], type: ColumnType): Conversion {
   }
 
   if (type === 'boolean') {
-    const out = values.map((value) => {
-      if (value === null || typeof value !== 'string') return value;
-      if (BOOL_TRUE.test(value)) return true;
-      if (BOOL_FALSE.test(value)) return false;
-      return value;
-    });
+    // Every vocabulary family (y/n, yes/no, true/false, t/f, 1/0, on/off) has
+    // the same canonical form, so the column does not expose which one it used.
+    const out = values.map((value) => toBooleanCell(value));
     return { values: out, notes };
   }
 
@@ -218,6 +241,9 @@ export function cleanTable(
   options: CleanOptions = {},
 ): Dataset {
   const dateOrder: DateOrderMode = options.dateOrder ?? 'auto';
+  const tuning: Tuning = { ...DEFAULT_TUNING, ...(options.tuning ?? {}) };
+  const parseRates: { column: string; parsed: number; total: number; rate: number }[] = [];
+  const conversions: { column: string; kind: string; count: number }[] = [];
   const accepted = new Set(options.acceptReviews ?? []);
   const reviewItems: ReviewItem[] = [];
   const fired = new Set<string>();
@@ -277,6 +303,27 @@ export function cleanTable(
   }
 
   rows = padRows(rows, columns.length);
+
+  // ---- 1b. S3: a header repeated mid-file (page break) is not a data row ---
+  if (headerDetected) {
+    const headerKey = columns.map((name) => cleanText(String(name)).trim().toLowerCase().replace(/\s+/g, ' '));
+    const repeats: Cell[][] = [];
+    rows = rows.filter((row) => {
+      const isRepeat =
+        row.length === headerKey.length &&
+        row.every((cell, position) => {
+          const text = cell === null || cell === undefined ? '' : cleanText(String(cell)).trim().toLowerCase().replace(/\s+/g, ' ');
+          return text === headerKey[position];
+        });
+      if (isRepeat) repeats.push(row);
+      return !isRepeat;
+    });
+    if (repeats.length > 0) {
+      rejected.push(...repeats.map((values) => ({ reason: 'repeated header', values })));
+      fired.add('S3');
+      cleanNotes.push(`${repeats.length} repeated header row(s) rejected (S3 – page break, not data)`);
+    }
+  }
 
   // ---- 2. R12: unicode / decorative quotes / trim – FIRST, before any
   //          matching, clustering or type inference sees the value ----------
@@ -441,8 +488,13 @@ export function cleanTable(
   // ---- 9. export date (reference for R3 future / R9 scheduled) -----------
   const exportDate = findExportDate(rejected);
 
-  // ---- 10. provisional types --------------------------------------------
-  let types: ColumnType[] = columns.map((_name, index) => inferType(rows.map((row) => row[index])));
+  // ---- 10. provisional types (content only: family, fraction, date, number) --
+  let types: ColumnType[] = columns.map((_name, index) =>
+    decideType(
+      rows.map((row) => row[index]),
+      tuning,
+    ).type,
+  );
 
   // ---- 11. R3: dates with a proven per-pattern day/month order -----------
   let ambiguousDates = 0;
@@ -478,7 +530,39 @@ export function cleanTable(
       }
     }
     ambiguousDates += resolved.ambiguousIndices.length;
-    conv[index] = resolved.converted;
+    // T3(a) – Excel serials left behind by the date resolver (it only knows
+    // date shapes, and a 5-digit number has none). Only in a column that is
+    // already a date column, so a column of ids or amounts never qualifies.
+    let serials = 0;
+    rows.forEach((row) => {
+      const value = row[index];
+      const text = typeof value === 'number' ? String(value) : typeof value === 'string' ? value.trim() : '';
+      if (!/^\d{5}(?:\.\d+)?$/.test(text)) return;
+      const serial = Number(text);
+      if (serial < 20000 || serial > 80000) return;
+      const iso = excelSerialToIso(serial);
+      if (!iso) return;
+      row[index] = iso;
+      serials += 1;
+    });
+    if (serials > 0) {
+      conversions.push({ column: columns[index], kind: 'Excel serial (1900 system)', count: serials });
+      cleanNotes.push(
+        `column "${columns[index]}": ${serials} Excel serial number(s) converted to ISO dates and flagged (T3)`,
+      );
+      reviewItems.push({
+        id: `serial_dates:${columns[index]}`,
+        kind: 'serial_dates',
+        column: columns[index],
+        rowIndex: null,
+        original: 'Excel serial',
+        suggested: 'ISO date',
+        confidence: 0.85,
+        reason: `${serials} value(s) were Excel serial numbers in a date column; they were converted with the 1900 leap-year offset`,
+        applied: true,
+      });
+    }
+    conv[index] = resolved.converted + serials;
     if (resolved.converted > 0) {
       fired.add('R3');
       cleanNotes.push(`column "${columns[index]}": ${resolved.converted} date(s) normalised to ISO 8601 (R3)`);
@@ -540,28 +624,96 @@ export function cleanTable(
     }
   }
 
-  // ---- 12. R4: numbers, with the text moved to <col>_note ----------------
+  // ---- 11c. T4: score fractions ("18/20") ------------------------------
+  const fractionRebuilt = rebuild(columns, force, conv, rows, (index, name, values) => {
+    if (types[index] !== 'number' || name.endsWith('_note')) return null;
+    const plan = planFractions(values, tuning);
+    if (!plan || plan.converted === 0) return null;
+    fired.add('T4');
+    conversions.push({ column: name, kind: `score fraction /${plan.denominator}`, count: plan.converted });
+    cleanNotes.push(
+      `column "${name}": ${plan.converted} score fraction(s) converted to the numerator, denominator ${plan.denominator} (T4)`,
+    );
+    return {
+      names: [name, `${name}_note`],
+      force: [false, false],
+      conv: [plan.converted, 0],
+      columns: [plan.values, plan.notes],
+    };
+  });
+  columns = fractionRebuilt.columns;
+  force = fractionRebuilt.force;
+  conv = fractionRebuilt.conv;
+  rows = fractionRebuilt.rows;
+  types = columns.map((_name, index) => inferType(rows.map((row) => row[index]), tuning));
+
+  // ---- 12. R4/T1/T2/T5: numbers, with the text moved to <col>_note -------
+  // Tolerant typing: a column whose values are mostly numbers is a number
+  // column even when a minority of cells are not, and each cell is parsed on
+  // its own (currency, "/-", period suffixes, discovered units, magnitudes,
+  // placeholders). The original text of every cell that does not parse is
+  // kept in <col>_note.
   let spelledNumbers = 0;
-  const numericFlags = columns.map((_name, index) => isNumericColumn(rows.map((row) => row[index])));
+  const numericFlags = columns.map((_name, index) => {
+    // A note column holds the originals a rule could not parse: it stays text.
+    if (_name.endsWith('_note')) return false;
+    if (types[index] === 'number') return true;
+    const values = rows.map((row) => row[index]);
+    const decision = decideType(values, tuning);
+    return decision.type === 'number';
+  });
   const numericRebuilt = rebuild(columns, force, conv, rows, (index, name, values) => {
     if (!numericFlags[index]) return null;
-    const result = convertNumeric(values);
-    if (result.moved === 0 && result.converted === 0) return null;
+    const plan = planNumeric(values, tuning);
+    if (!plan) return null;
+    const present = values.filter((value) => value !== null && String(value).trim() !== '').length;
+    const parsed = plan.values.filter((value) => value !== null).length;
+    if (present > 0) {
+      parseRates.push({ column: name, parsed, total: present, rate: parsed / present });
+    }
+    for (const kind of plan.kinds) {
+      const count = plan.values.filter((value) => value !== null).length;
+      conversions.push({ column: name, kind, count });
+    }
+    if (plan.units?.length) {
+      cleanNotes.push(`column "${name}": unit word(s) discovered from the data: ${plan.units.join(', ')} (T2)`);
+    }
+    if (plan.magnitudes?.length) {
+      cleanNotes.push(`column "${name}": magnitude suffix(es) applied: ${plan.magnitudes.join(', ')} (T2)`);
+    }
+    if (plan.moved > 0) {
+      cleanNotes.push(
+        `column "${name}": ${plan.moved} non-numeric value(s) moved to ${name}_note; ${parsed} of ${present} parsed (${((parsed / Math.max(1, present)) * 100).toFixed(1)}%) (T1)`,
+      );
+      reviewItems.push({
+        id: `parse_gap:${name}`,
+        kind: 'parse_gap',
+        column: name,
+        rowIndex: null,
+        original: plan.notes.find((value) => value !== null) as string | undefined ?? '',
+        suggested: 'kept in the note column',
+        confidence: 0.75,
+        reason: `${parsed} of ${present} value(s) parsed as numbers; the rest keep their original text in ${name}_note`,
+        applied: true,
+      });
+    }
+    const result = convertNumeric(plan.values);
+    if (plan.moved === 0 && result.converted === 0 && plan.converted === 0) return null;
     fired.add('R4');
-    spelledNumbers += result.spelled;
+    spelledNumbers += result.spelled + (plan.spelled ?? 0);
+    if ((plan.spelled ?? 0) > 0) {
+      fired.add('R13');
+      cleanNotes.push(`column "${name}": ${plan.spelled} spelled-out number(s) converted to digits (R13)`);
+    }
     const names = [name];
     const columnsOut: Cell[][] = [result.values];
     const forceOut = [force[index] ?? false];
-    const convOut = [(conv[index] ?? 0) + result.converted];
-    if (result.moved > 0) {
-      cleanNotes.push(`column "${name}": ${result.moved} non-numeric value(s) moved to ${name}_note (R4)`);
+    const convOut = [(conv[index] ?? 0) + result.converted + plan.converted];
+    if (plan.moved > 0) {
       names.push(`${name}_note`);
-      columnsOut.push(result.notes);
+      columnsOut.push(plan.notes);
       forceOut.push(false);
       convOut.push(0);
-    }
-    if (result.converted > 0) {
-      cleanNotes.push(`column "${name}": ${result.converted} value(s) normalised to plain numbers (R4)`);
     }
     if (result.spelled > 0) {
       cleanNotes.push(`column "${name}": ${result.spelled} spelled-out number(s) converted to digits (R13)`);
@@ -585,11 +737,83 @@ export function cleanTable(
     });
     conv[index] += result.conversions;
     mappings.push(...result.mappings);
+    // S1 – values that differ by a symbol are never merged; they are listed so
+    // the human can decide whether they are one category or two.
+    for (const group of result.similar) {
+      fired.add('S1');
+      mappings.push({
+        column: name,
+        from: 'review: similar values',
+        to: group.values.join(' / '),
+        count: group.count,
+      });
+      reviewItems.push({
+        id: `similar_values:${name}:${group.values.join('|')}`,
+        kind: 'similar_values',
+        column: name,
+        rowIndex: null,
+        original: group.values.join(' / '),
+        suggested: 'kept separate – a leading or trailing symbol is significant',
+        confidence: 0.5,
+        reason:
+          'these values differ only by a symbol, so they were never merged; keep them apart unless you know they mean the same thing',
+        applied: false,
+      });
+      cleanNotes.push(
+        `column "${name}": ${group.values.join(' / ')} kept separate and listed as "review: similar values" (S1)`,
+      );
+    }
     if (result.conversions > 0) {
       fired.add('R6');
       cleanNotes.push(`column "${name}": ${result.conversions} value(s) clustered to a canonical category form (R6)`);
     }
   });
+
+  // ---- 13a. N1/N2/N3: normalisations that need no guessing --------------
+  for (let index = 0; index < columns.length; index += 1) {
+    if (types[index] !== 'text') continue;
+    const name = columns[index] as string;
+    if (name.endsWith('_note')) continue;
+    const values = rows.map((row) => row[index]);
+
+    // N1 – one boolean vocabulary family across the column.
+    const booleans = booleanFamily(values);
+    if (booleans) {
+      booleans.values.forEach((value, rowIndex) => {
+        rows[rowIndex][index] = value;
+      });
+      types[index] = 'boolean';
+      conversions.push({ column: name, kind: `boolean family ${booleans.family}`, count: values.length });
+      cleanNotes.push(`column "${name}": values unified to booleans (${booleans.family} family) (N1)`);
+      continue;
+    }
+
+    // N2 – email column: trim and lowercase.
+    const emails = planEmails(values, tuning);
+    if (emails && emails.converted > 0) {
+      emails.values.forEach((value, rowIndex) => {
+        rows[rowIndex][index] = value;
+      });
+      conversions.push({ column: name, kind: 'email (trim + lowercase)', count: emails.converted });
+      cleanNotes.push(`column "${name}": ${emails.converted} email address(es) trimmed and lowercased (N2)`);
+      continue;
+    }
+
+    // N3 – phone column: strip separators, 00 → +, one shared country code.
+    const phones = planPhones(values, tuning);
+    if (phones && phones.converted > 0) {
+      phones.values.forEach((value, rowIndex) => {
+        rows[rowIndex][index] = value;
+      });
+      const kind = phones.countryCode ? `phone (country code ${phones.countryCode} recorded)` : 'phone';
+      conversions.push({ column: name, kind, count: phones.converted });
+      cleanNotes.push(
+        `column "${name}": ${phones.converted} phone number(s) normalised (N3)` +
+          (phones.countryCode ? `; all share country code ${phones.countryCode}, recorded in the report` : '') +
+          (phones.flagged > 0 ? `; ${phones.flagged} value(s) have no country code and were flagged` : ''),
+      );
+    }
+  }
 
   // ---- 13b. R17: multi-item columns get <col>_item_count -----------------
   const itemPlans: { name: string; counts: Cell[] }[] = [];
@@ -628,7 +852,9 @@ export function cleanTable(
   types = [];
   for (let index = 0; index < columns.length; index += 1) {
     const values = rows.map((row) => row[index]);
-    let type = inferType(values);
+    // The same content-only decision the earlier stages used: a boolean family
+    // such as Y/N or T/F must not be re-read as text here.
+    let type = columns[index]?.endsWith('_note') ? 'text' : decideType(values, tuning).type;
     // A "date" column must hold ISO values only; anything the file left
     // unproven (or unparseable) demotes the column to text instead of lying.
     if (type === 'date') {
@@ -909,6 +1135,8 @@ export function cleanTable(
     reviewItems,
     spelledNumbers,
     overlapping,
+    parseRates,
+    conversions,
     notes: [...notes, ...cleanNotes],
   };
 

@@ -4,8 +4,8 @@
 format may change with them. Do not treat it as a finished product, and read
 [Known limitations](#known-limitations) before relying on a result.
 
-A fully automated web app that turns **any file** into clean, structured data — then lets you
-download it as a normal table or as a pivot table.
+A fully automated web app that turns a messy **table** into clean, structured data — then lets
+you download it as a normal table or as a pivot table.
 
 Upload a file, and the pipeline runs with **zero manual steps** until you reach the choice
 screen. Nothing is uploaded anywhere: every byte is processed locally in your browser with
@@ -54,7 +54,14 @@ Files are auto-detected from the extension, MIME type and magic bytes:
 | Images / scans | PNG, JPG, WEBP (Tesseract.js OCR → table reconstruction) |
 | Logs & email | `.log`, `.eml`, key-value text |
 | Archives | ZIP — every member is processed recursively |
-| Anything else | Falls back to text extraction, then heuristic parsing |
+| Anything else | Falls back to text extraction, then heuristic parsing (best effort, not a promise) |
+
+**What has actually been tested:** delimited text (comma, tab, pipe, semicolon, and the
+content-sniffed variants), the `key=value` / aligned / repeated-line text shapes, XLSX and
+XLS, JSON/NDJSON, XML, YAML, small PDFs with extractable text, DOCX, HTML, RTF, EML, and PNG/
+JPG OCR of printed tables. Anything outside that list — scanned handwriting, RTL scripts,
+languages other than English for OCR, PDFs that are pure images, and any file larger than
+the documented ceilings — is untested. "Converts your table" is the claim; "any file" is not.
 
 The structuring stage detects delimiters, tables, `key:value` pairs and repeated patterns,
 flattens nested JSON/XML into dot-notation columns, and extracts regex entities (dates,
@@ -615,21 +622,93 @@ snapshot is a record of one run, not a specification for unknown inputs.
 
 ## Known limitations
 
-### What the randomised re-score still gets wrong
+### What our own fuzz harness still gets wrong (not an independent check)
 
-The rules are re-scored on data they were never tuned for by the fuzz harness
-(`tests/fuzz`): six synthetic domains × 24 damage injectors × 12 seeds = **2,016 seeded
-cases**, each graded cell by cell after canonicalisation. On the current tree **5 cases still
-fail**, and they are listed here rather than hidden:
+The fuzz harness (`tests/fuzz`) builds messy files from ground truth with damage injectors:
+six synthetic domains × 38 injectors × 4 seeds = **912 single-injector cases**, plus 24 random
+combinations of four injectors × 4 seeds = **96 mixed cases** (**1,008** in the default run;
+`npm run fuzz -- --seeds=N` scales it). Every case goes through `processBytes` → `toCSV` and is
+graded on the exported bytes by a canonicalizer that imports nothing from `src/pipeline` or
+`src/lib`.
 
-| Case | What still goes wrong | Score |
-| --- | --- | --- |
-| `key=value packed` (payroll, seed 9) | A packed cell whose *value* contains a `;` (`note=call; then email`) ends the pair list early, so the keys after it — here `department` — come out null for the affected rows. The row is kept; the value is lost. | 97.50% cells |
-| `key=value packed` (library loans, seeds 7, 8, 12) | Same cause on the `author` / `genre` columns: a semicolon inside a value splits the pair list in the wrong place. | 99.11–99.42% |
-| `overlapping category` (shipments, seed 11) | A value that combines two existing categories is not always listed in **Value mappings** as an overlap (R18), so the review item is missing even though the cell is correct. | 100% cells, 1 honesty gap |
+It is *our* harness — we wrote the generators, the injectors and the canonicalizer — so a green
+run is not evidence of accuracy on data we did not invent, and the numbers below are not an
+independent check. On the current tree the default run is green: no single injector below 98%,
+no combination below 95%, zero silent row loss, and no missing review item.
 
-Zero silent row loss holds in every one of those cases (`rows_in = clean + rejected +
-duplicates`), and the default CI run (4 seeds) is fully green.
+**Why the classes passed this harness before the round below.** The old grader called
+`categoryKey`/`cleanText` from `src/lib/strings` to decide whether two cells were "the same
+value". Those helpers fold case, whitespace *and* symbols — so when the pipeline merged `B+`
+into `B`, the grader folded the expected `B+` too and called it a match. Every row below was
+invisible for the same reason: the harness and the pipeline shared the definition of equality.
+The new grader re-parses the downloaded CSV with its own RFC 4180 parser and compares with its
+own rules (separator runs fold only *between* alphanumerics; a leading or trailing symbol is
+content).
+
+| Class | Why it passed before |
+| --- | --- |
+| S1 distinct categories merged | Grader folded `B+`/`B`/`B-` through the pipeline's own `categoryKey`. |
+| S2 two tables in one file | Grading read `datasets[0]` only; the second table was never looked for. |
+| S3 repeated header | No header repeat was injected at all. |
+| T1 tolerant typing | Every cell was expected verbatim; a partially-typed column scored 100% either way. |
+| T2 affixed numbers | Expected values were text, so `₹ 4,287.50` staying text matched. |
+| T3 serial dates / date-times | No serial or time-of-day form was injected. |
+| T4 score fractions | No `n/N` column was injected. |
+| T5 placeholders | Injectors only used sentinels the pipeline already nulled. |
+| N1 boolean families | Injected `yes`/`no` only, one spelling. |
+| N2 emails | Expected values were already lowercase and trimmed. |
+| N3 phones | No phone column existed in the generated domains. |
+
+**Why the thresholds are not fitted to one fixture.** Every tolerant decision sits on a
+threshold in `src/pipeline/typing.ts` (`DEFAULT_TUNING`), and `tests/tuning-sweep.test.ts` runs
+each one over four values — the default plus a much stricter and a much looser neighbour — and
+prints the accuracy for every value. The result is a plateau rather than a spike: no value of
+any threshold takes its governed cases below 98%, so the defaults are chosen for balance, not
+because they are the only value that works. The reasoning is in the source next to each field:
+a column takes a type when a *majority* of its own values parse (0.6, not "most"), a unit word
+must recur in at least 5% of cells and a column may hold at most 8 distinct ones (a unit is a
+recurring convention, not a word that appears once), and a magnitude suffix (`3.2 L`) must land
+within 100× of the column median (so `3M` in an id column is not 3,000,000).
+
+`tests/negative-controls.test.ts` pins the other side of each rule, so a future accuracy fix
+cannot buy points by over-merging: `B`/`B+`/`B-`, `A`/`A+`, `S`/`M`/`L`/`XL` and `Q1`/`Q-1`
+stay distinct while `10-A`/`10 A`/`10A`/`10-a` merge; `A1`/`B12`/`3M`/`4K` stay codes; a
+five-digit id column is never read as Excel serials; a column of mixed denominators is not a
+fraction column; and `yes` beside prose is not a boolean column.
+
+One honesty gap is documented rather than hidden: a packed `key=value` cell whose *value*
+contains a `;` (`note=call; then email`) ends the pair list early, so keys after it can come
+out null on the affected rows. The row is kept and the cell is reported as a parse gap; the
+value after the semicolon is not recovered. Zero silent row loss holds everywhere
+(`rows_in = clean + rejected + duplicates`).
+
+### Independent check
+
+An independent check (someone else's files, someone else's grader) ran the real pipeline on
+live commit `832c376` with two sets of synthetic files drawn from five domains — retail,
+school, payroll, shipment log, and one further set. The pipe-delimited `.txt` fix works. Cell
+accuracy on the other files was **74% (payroll) to 89% (retail)**, about 88% on the school
+set and 81% on the shipment log — the same failures on both sets, which is what a *missing
+rule* looks like.
+
+Classes that failed:
+
+| Class | What went wrong |
+| --- | --- |
+| Distinct categories merged | `B+` folded into `B`, `A+` into `A` (about 10% of rows) |
+| Repeated header | A page-break header row leaked in as data |
+| Two tables in one file | The second table's header and rows landed under the first table's columns |
+| Locale-style numbers with affixes | `₹ 4,287.50`, `12,500/-`, `3.2 L`, `18 hrs` left as text |
+| Excel serial dates | `45292` instead of `2024-01-05` |
+| Date-times | `05/01/2024 14:30`, `5 Jan 2024 14:30` left unparsed |
+| Score fractions | `18/20` not converted, denominator lost |
+| Yes/No variants | `Y`/`N`/`T`/`F` not unified to booleans |
+| Emails | Uppercase and padded addresses not normalised |
+| Phones | `+1 (555) 010-0001`, `001-555-010-0001` not normalised |
+
+Those numbers describe `832c376`; the rules for each class are being added now. **The figures
+here will be updated after an independent re-check** — until then, treat 74–89% as the
+honest estimate for data this project's own harness does not generate.
 
 ### Structural limits
 

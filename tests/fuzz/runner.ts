@@ -4,11 +4,15 @@
  * cell-by-cell against the tracked expectation.
  *
  * Fairness rules baked in here:
+ *   - the case goes through the product path: `processBytes`, then the same
+ *     `toCSV` the download button calls — grading reads the exported bytes,
+ *     not the in-memory table;
+ *   - the grader (`./canonical`) imports nothing from `src/pipeline` or
+ *     `src/lib`, so a rule that merges two values cannot also make the grader
+ *     call them equal;
  *   - expected values are ground truth (adjusted only where an injector
  *     rewrites the answer: poisoned numbers → null, packed text → packed
  *     text);
- *   - comparison is canonicalized (trim/case/space, punctuation folded) so
- *     style mess cannot score as a data error, but wrong values always do;
  *   - row accounting must be exact: rowsIn = clean + rejected + duplicates,
  *     rejected must equal the injected junk line count, and every expected
  *     column must exist in the output.
@@ -16,15 +20,10 @@
 
 import { processBytes } from '../../src/pipeline';
 import type { Cell, Dataset } from '../../src/types';
-import { categoryKey, cleanText, displayCell, toSnakeCase } from '../../src/lib/strings';
-import { parseNumberValue } from '../../src/lib/numbers';
-import {
-  INJECTORS,
-  PHASES,
-  serialLines,
-  serialize,
-  type InjectContext,
-} from './injectors';
+import type { Tuning } from '../../src/pipeline/typing';
+import { toCSV } from '../../src/lib/export';
+import { parseCsv, sameCell, sameHeaderName } from './canonical';
+import { INJECTORS, PHASES, serialize, type InjectContext } from './injectors';
 import type { Domain, GroundTruth } from './generators';
 import { makeRng } from './random';
 
@@ -43,6 +42,8 @@ export interface CaseResult {
   rejected: number;
   expectedRejected: number;
   missingColumns: string[];
+  /** Columns no injector touched; verified against ground truth on their own. */
+  unrelatedColumns: number;
   /** Review items the injected mess demands but the pipeline did not file. */
   reviewMissing: string[];
   /** First few cell mismatches, for diagnosis. */
@@ -80,44 +81,90 @@ export function buildCase(gt: GroundTruth, seed: number, injectorNames: string[]
     const pool = INJECTORS.filter((injector) => injector.phase === phase && chosen.has(injector.name));
     // Value-phase order is shuffled per seed; structural phases keep their
     // fixed order (merge → split → duplicate → decorate → serialize).
-    const ordered = phase === 'value' ? rng.shuffle(pool) : pool;
+    // Typing injectors (`late`) run after the formatting ones of the same phase.
+    const ordered =
+      phase === 'value'
+        ? [...rng.shuffle(pool.filter((injector) => !injector.late)), ...rng.shuffle(pool.filter((injector) => injector.late))]
+        : pool;
     for (const injector of ordered) injector.apply(ctx);
   }
   return { text: serialize(ctx), ctx };
 }
 
-function nullish(value: Cell): boolean {
+function nullish(value: Cell | undefined | null): boolean {
   return value === null || value === undefined || (typeof value === 'string' && value.trim() === '');
 }
 
-function normalize(value: Cell): string {
-  if (typeof value === 'boolean') return value ? 'true' : 'false';
-  return cleanText(String(value)).trim().toLowerCase().replace(/\s+/g, ' ');
-}
-
-/** Canonicalized cell equality (principle: compare after canonicalization). */
-export function sameCell(expected: Cell, actual: Cell): boolean {
-  if (nullish(expected) || nullish(actual)) return nullish(expected) && nullish(actual);
-  if (typeof expected === 'number' || typeof actual === 'number') {
-    const a = typeof expected === 'number' ? expected : parseNumberValue(expected);
-    const b = typeof actual === 'number' ? actual : parseNumberValue(actual);
-    if (a !== null && b !== null && Number.isFinite(a) && Number.isFinite(b)) {
-      return Math.abs(a - b) < 0.005;
-    }
-    return false;
-  }
-  const left = normalize(expected);
-  const right = normalize(actual);
-  if (left === right) return true;
-  // Case/space/punctuation folding: "Paid" vs "PAID " vs "paid."
-  return categoryKey(left) === categoryKey(right);
-}
-
-function foldName(name: string): string {
-  return cleanText(name).toLowerCase().replace(/[^a-z0-9]+/g, '');
+/** Snake-case a header name without using the pipeline's own helper. */
+function toSnakeCase(name: string): string {
+  const text = name
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^\w\s]/g, ' ')
+    .replace(/[_\s]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  if (!text) return '';
+  return /^[0-9]/.test(text) ? `col_${text}` : text;
 }
 
 const isBlankRow = (row: Cell[]): boolean => row.every((cell) => nullish(cell));
+
+/** One record's identity, for matching a parsed record back to an injected row. */
+const recordKey = (record: readonly string[]): string => {
+  const fields = record.map((field) => field.trim());
+  while (fields.length > 0 && fields[fields.length - 1] === '') fields.pop();
+  return fields.join('\u0001');
+};
+
+/**
+ * How many records of the messy file are *not* the header, a data row or the
+ * appended table — i.e. how many the pipeline is obliged to reject.
+ *
+ * Records are matched by identity and in order, never by subtraction, so the
+ * count stays right when a junk line is itself split by the delimiter or when a
+ * data row is blank.
+ */
+function countInjectedJunk(text: string, ctx: InjectContext): number {
+  const raw = parseCsv(text, ctx.delimiter ?? ',');
+  const records = raw.map(recordKey);
+  // Only a genuinely empty line is trimmed by the extractor; `,,,,` is a record.
+  const emptyText = (index: number): boolean => {
+    const record = raw[index];
+    return !record || (record.length === 1 && (record[0] as string).trim() === '');
+  };
+  const dataKeys = ctx.rows.map((row) => recordKey(row.map((cell) => (nullish(cell) ? '' : String(cell)))));
+  const appendKeys = ctx.appendTable
+    ? [
+        recordKey(ctx.appendTable.header.map((cell) => (nullish(cell) ? '' : String(cell)))),
+        ...ctx.appendTable.rows.map((row) => recordKey(row.map((cell) => (nullish(cell) ? '' : String(cell))))),
+      ]
+    : [];
+
+  let head = 0;
+  let tail = records.length - 1;
+  while (head <= tail && emptyText(head)) head += 1;
+  while (tail >= head && emptyText(tail)) tail -= 1;
+
+  let dataAt = 0;
+  let appendAt = 0;
+  let junk = 0;
+  for (let index = head + 1; index <= tail; index += 1) {
+    const record = records[index] as string;
+    if (dataAt < dataKeys.length && record === dataKeys[dataAt]) {
+      dataAt += 1;
+      continue;
+    }
+    if (appendAt < appendKeys.length && record === appendKeys[appendAt]) {
+      appendAt += 1;
+      continue;
+    }
+    junk += 1;
+  }
+  // A data row with no values at all is rejected too ("blank row"), and the
+  // harness never expects it back, so it belongs in the same bucket.
+  return junk + ctx.rows.filter(isBlankRow).length;
+}
 
 /** Generate the ground truth for a domain + seed (separate RNG stream). */
 export function groundTruthFor(domain: Domain, seed: number): GroundTruth {
@@ -129,6 +176,7 @@ export async function runCase(
   domain: Domain,
   seed: number,
   injectorNames: string[],
+  tuning?: Partial<Tuning>,
 ): Promise<CaseResult> {
   const gt = groundTruthFor(domain, seed);
   const label = `${domain.name} · ${injectorNames.join(' + ') || 'clean'} · seed ${seed}`;
@@ -145,6 +193,7 @@ export async function runCase(
     rejected: -1,
     expectedRejected: -1,
     missingColumns: [],
+    unrelatedColumns: 0,
     reviewMissing: [],
     errors: [],
   };
@@ -152,10 +201,11 @@ export async function runCase(
   const { text, ctx } = buildCase(gt, seed, injectorNames);
 
   let dataset: Dataset;
+  let datasets: Dataset[] = [];
   try {
     const bytes = new TextEncoder().encode(text);
-    const datasets = await processBytes('fuzz.csv', 'text/csv', bytes, {});
-    dataset = datasets[0];
+    datasets = await processBytes('fuzz.csv', 'text/csv', bytes, tuning ? { tuning } : {});
+    dataset = datasets[0] as Dataset;
   } catch (error) {
     result.rowLoss = true;
     result.errors.push(`pipeline threw: ${error instanceof Error ? error.message : String(error)}`);
@@ -163,18 +213,14 @@ export async function runCase(
   }
 
   // ---- row accounting -----------------------------------------------------
-  // parseDelimited trims the file's outer whitespace first, so leading and
-  // trailing blank lines never reach the parser; every remaining line — junk,
-  // blank or data — does, and R1 rejects the junk and blank ones. Expected
-  // rejected is therefore: surviving lines − header − kept (non-blank) data rows.
-  const lines = serialLines(ctx);
-  let head = 0;
-  let tail = lines.length - 1;
-  while (head <= tail && (lines[head] as string).trim() === '') head += 1;
-  while (tail >= head && (lines[tail] as string).trim() === '') tail -= 1;
-  const survivingLines = tail - head + 1;
-  const keptDataRows = ctx.rows.filter((row) => !isBlankRow(row)).length;
-  result.expectedRejected = survivingLines - 1 - keptDataRows;
+  // Walk the file's records and classify each one by identity: the first record
+  // is the header, the injected data rows appear in order, the appended table
+  // follows them, and anything left over is a junk line the pipeline *should*
+  // reject. Counting records rather than lines matters because a junk line
+  // whose payload contains the delimiter (`TOTAL,,,1` padding) is two records to
+  // any RFC 4180 reader; counting by identity rather than by subtraction matters
+  // because blank data rows are data, while blank injected lines are not.
+  result.expectedRejected = countInjectedJunk(text, ctx);
   result.rejected = dataset.rejected.length;
 
   const report = dataset.report;
@@ -204,49 +250,81 @@ export async function runCase(
       pinned.push(row);
       return true;
     }
-    const key = row.map((cell) => (typeof cell === 'string' ? cleanText(cell).trim().toLowerCase() : cell === null || cell === undefined ? '' : String(cell))).join('\u0001');
+    const key = row
+      .map((cell) =>
+        typeof cell === 'string'
+          ? cell.trim().toLowerCase().replace(/\s+/g, ' ')
+          : cell === null || cell === undefined
+            ? ''
+            : String(cell),
+      )
+      .join('\u0001');
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
   });
 
   if (!identityHolds || expectedFinal.length !== dataset.rows.length) result.rowLoss = true;
-  if (result.rejected !== result.expectedRejected) {
+  // Only the lower bound is meaningful. A data row that went missing is caught
+  // by the identity/row-count check above, so anything the pipeline rejects
+  // beyond the injected junk is junk as well: rejecting too much junk is not a
+  // failure (a junk line can even contain a delimiter or an unbalanced quote and
+  // split into two records), but *missing* a junk line means it was kept as data.
+  if (result.rejected < result.expectedRejected) {
     result.rowLoss = true;
     result.errors.push(
-      `rejected count ${result.rejected} ≠ injected junk lines ${result.expectedRejected}`,
+      `rejected count ${result.rejected} < injected junk lines ${result.expectedRejected}`,
     );
   }
 
-  // ---- column mapping -----------------------------------------------------
-  const cleanIndex = new Map<string, number>();
-  dataset.columns.forEach((name, index) => {
-    if (!cleanIndex.has(name)) cleanIndex.set(name, index);
-    const folded = foldName(name);
-    if (!folded) return;
-    if (!cleanIndex.has(folded)) cleanIndex.set(folded, index);
-  });
+  // ---- what the user actually gets: the CSV download, re-parsed ----------
+  // `toCSV` is the export path the Download button uses, so a value the
+  // exporter neutralises (apostrophe prefix), mangles or drops fails here.
+  const grid = parseCsv(toCSV(dataset.columns, dataset.rows, { types: dataset.types }));
+  const headerRow = grid[0] ?? [];
+  const body = grid.slice(1);
+  if (headerRow.length !== dataset.columns.length) {
+    result.rowLoss = true;
+    result.errors.push('exported CSV header does not match the dataset columns');
+  }
 
-  const mapping: { gtIndex: number; cleanIndex: number }[] = [];
+  const mapping: { gtIndex: number; csvIndex: number }[] = [];
   for (let gtIndex = 0; gtIndex < gt.header.length; gtIndex += 1) {
     const name = ctx.colName.get(gtIndex) ?? toSnakeCase(gt.header[gtIndex]);
-    const hit = cleanIndex.get(name) ?? cleanIndex.get(foldName(name));
-    if (hit === undefined) {
+    const hit = headerRow.findIndex((header) => sameHeaderName(header, name));
+    if (hit < 0) {
       result.missingColumns.push(name);
     } else {
-      mapping.push({ gtIndex, cleanIndex: hit });
+      mapping.push({ gtIndex, csvIndex: hit });
     }
   }
 
-  // ---- cell-by-cell -------------------------------------------------------
-  const rows = Math.min(expectedFinal.length, dataset.rows.length);
+  // ---- cell-by-cell, on the downloaded bytes ------------------------------
+  // A column no injector touched is "unrelated": its cells are ground truth and
+  // must come back byte-identical. Mixing four injectors is exactly where a rule
+  // for one column can leak into a neighbour (a numeric plan applied to a text
+  // column, a note column stealing a value), so those columns are asserted on
+  // their own as well as through the overall accuracy.
+  const asText = (cell: Cell | undefined | null): string | null => (nullish(cell) ? null : String(cell));
+  const untouched = new Set<number>();
+  for (let gtIndex = 0; gtIndex < gt.header.length; gtIndex += 1) {
+    const same = ctx.expected.every((row, rowIndex) =>
+      sameCell(asText(row[gtIndex]), asText(gt.rows[rowIndex]?.[gtIndex])),
+    );
+    if (same) untouched.add(gtIndex);
+  }
+  result.unrelatedColumns = untouched.size;
+  const unrelatedProblems = new Map<string, string>();
+
+  const rows = Math.min(expectedFinal.length, body.length);
+  if (body.length !== expectedFinal.length) result.rowLoss = true;
   for (let rowIndex = 0; rowIndex < rows; rowIndex += 1) {
     const expectedRow = expectedFinal[rowIndex];
-    const cleanRow = dataset.rows[rowIndex];
-    for (const { gtIndex, cleanIndex: columnIndex } of mapping) {
+    const cleanRow = body[rowIndex] ?? [];
+    for (const { gtIndex, csvIndex } of mapping) {
       result.cellsTotal += 1;
       const expectedCell = expectedRow[gtIndex];
-      const actualCell = cleanRow[columnIndex] ?? null;
+      const actualCell = cleanRow[csvIndex] ?? null;
       if (sameCell(expectedCell, actualCell)) {
         result.cellsMatch += 1;
       } else if (result.errors.length < 8) {
@@ -256,13 +334,71 @@ export async function runCase(
           )} got ${JSON.stringify(actualCell)}`,
         );
       }
+      if (untouched.has(gtIndex) && !sameCell(asText(gt.rows[rowIndex]?.[gtIndex]), actualCell)) {
+        unrelatedProblems.set(
+          ctx.colName.get(gtIndex) ?? String(gtIndex),
+          `row ${rowIndex}: expected ${JSON.stringify(gt.rows[rowIndex]?.[gtIndex] ?? null)} got ${JSON.stringify(actualCell)}`,
+        );
+      }
+    }
+  }
+  if (unrelatedProblems.size > 0) {
+    result.rowLoss = true;
+    for (const [column, detail] of unrelatedProblems) {
+      result.errors.push(`unrelated column ${column} changed – ${detail}`);
     }
   }
   result.accuracy = result.cellsTotal === 0 ? 1 : result.cellsMatch / result.cellsTotal;
 
+  // ---- S2: the appended table must be its own dataset, graded on its own ---
+  if (ctx.appendTable && ctx.expect.secondTable) {
+    const second = datasets[1];
+    if (!second) {
+      result.rowLoss = true;
+      result.errors.push('second table was not split into its own dataset');
+    } else {
+      const secondGrid = parseCsv(toCSV(second.columns, second.rows, { types: second.types }));
+      const secondHeader = secondGrid[0] ?? [];
+      const secondBody = secondGrid.slice(1);
+      const { header, expected } = ctx.expect.secondTable;
+      const columns = header.map((name, index) => ({ index, at: secondHeader.findIndex((h) => sameHeaderName(h, name)) }));
+      for (const column of columns) {
+        if (column.at < 0) result.missingColumns.push(`table2:${header[column.index]}`);
+      }
+      if (secondBody.length !== expected.length) {
+        result.rowLoss = true;
+        result.errors.push(`second table has ${secondBody.length} rows, expected ${expected.length}`);
+      }
+      for (let rowIndex = 0; rowIndex < Math.min(expected.length, secondBody.length); rowIndex += 1) {
+        for (const column of columns) {
+          if (column.at < 0) continue;
+          result.cellsTotal += 1;
+          const expectedCell = expected[rowIndex]?.[column.index] ?? null;
+          const actualCell = secondBody[rowIndex]?.[column.at] ?? null;
+          if (sameCell(expectedCell, actualCell)) result.cellsMatch += 1;
+          else if (result.errors.length < 8) {
+            result.errors.push(
+              `table2 row ${rowIndex} ${header[column.index]}: expected ${JSON.stringify(expectedCell)} got ${JSON.stringify(actualCell)}`,
+            );
+          }
+        }
+      }
+      result.accuracy = result.cellsTotal === 0 ? 1 : result.cellsMatch / result.cellsTotal;
+    }
+  }
+
   // ---- honesty checks (ambiguity / low confidence must be surfaced) -------
   if (report.ambiguousDates > 0 && !dataset.review.some((item) => item.kind === 'date_order')) {
     result.reviewMissing.push('date_order');
+  }
+  if (ctx.expect.similarValues) {
+    const listed = report.mappings.some((mapping) => String(mapping.from).startsWith('review: similar')) ||
+      dataset.review.some((item) => item.kind === 'similar_values');
+    if (!listed) result.reviewMissing.push('similar_values');
+  }
+  if (ctx.expect.repeatedHeader) {
+    const rejected = report.rejectedReasons.some((reason) => reason.reason === 'repeated header');
+    if (!rejected) result.reviewMissing.push('repeated_header');
   }
   if (ctx.expect.overlap) {
     const listed =
@@ -301,4 +437,3 @@ export async function processText(name: string, text: string): Promise<Dataset> 
   return datasets[0];
 }
 
-export { displayCell };

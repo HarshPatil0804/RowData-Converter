@@ -28,8 +28,16 @@ export interface ChoiceScreenProps {
 
 function shortName(name: string): string {
   const parts = name.split(/[!/\\]/);
-  const last = parts[parts.length - 1] || name;
-  return last.length > 34 ? `${last.slice(0, 31)}…` : last;
+  let last = parts[parts.length - 1] || name;
+  // S2 – when one file held two tables, "table 1 of 2" is the part of the label
+  // that tells the two datasets apart, so truncation must never eat it.
+  const marker = ' · table ';
+  const at = last.indexOf(marker);
+  const suffix = at >= 0 ? last.slice(at) : '';
+  if (at >= 0) last = last.slice(0, at);
+  const room = 34 - suffix.length;
+  if (last.length > room) last = `${last.slice(0, Math.max(6, room - 1))}…`;
+  return `${last}${suffix}`;
 }
 
 export default function ChoiceScreen({

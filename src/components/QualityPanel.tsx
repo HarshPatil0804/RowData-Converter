@@ -17,6 +17,19 @@ const TYPE_CLASS: Record<string, string> = {
 export default function QualityPanel({ dataset, onDownloaded }: QualityPanelProps) {
   const report = dataset.report;
 
+  // T1 – how much of each column actually parsed into its type. The weakest
+  // column is the honest headline: "99% parsed" means nothing if one column is
+  // half text, so it is a summary tile rather than a footnote.
+  const parseByColumn = new Map(report.parseRates.map((rate) => [rate.column, rate]));
+  const weakest = [...report.parseRates].sort((a, b) => a.rate - b.rate)[0];
+  const conversionsByColumn = new Map<string, { kind: string; count: number }[]>();
+  for (const conversion of report.conversions) {
+    const list = conversionsByColumn.get(conversion.column) ?? [];
+    list.push({ kind: conversion.kind, count: conversion.count });
+    conversionsByColumn.set(conversion.column, list);
+  }
+  const conversionTotal = report.conversions.reduce((sum, entry) => sum + entry.count, 0);
+
   const summary: { label: string; value: string; hint?: string }[] = [
     { label: 'Rows in → clean', value: `${report.rowsIn.toLocaleString()} → ${report.rowsOut.toLocaleString()}` },
     {
@@ -55,6 +68,18 @@ export default function QualityPanel({ dataset, onDownloaded }: QualityPanelProp
       label: 'Needs review',
       value: report.reviewItems.filter((item) => !item.applied).length.toLocaleString(),
       hint: 'low-confidence changes kept as original – accept or reject them in the Needs review tab (principle 2)',
+    },
+    {
+      label: 'Weakest parse rate',
+      value: weakest ? `${Math.round(weakest.rate * 100)}%` : '–',
+      hint: weakest
+        ? `${weakest.column}: ${weakest.parsed.toLocaleString()} of ${weakest.total.toLocaleString()} values parsed into the column type; the rest keep their original text in a _note column (T1)`
+        : 'no typed column needed per-cell parsing',
+    },
+    {
+      label: 'Values rewritten',
+      value: conversionTotal.toLocaleString(),
+      hint: 'cells rewritten by tolerant typing: currency and unit affixes, magnitudes, Excel serials, fractions, placeholders, phone and email normalisation (T2–T5, N1–N3)',
     },
     {
       label: 'Spelled numbers',
@@ -195,6 +220,7 @@ export default function QualityPanel({ dataset, onDownloaded }: QualityPanelProp
               <th>Type</th>
               <th>Nulls</th>
               <th>Conversions</th>
+              <th>Parsed</th>
               <th>Filled</th>
               <th>Unique</th>
               <th>Outliers</th>
@@ -209,8 +235,24 @@ export default function QualityPanel({ dataset, onDownloaded }: QualityPanelProp
                   <span className={TYPE_CLASS[column.type] ?? 'badge badge-text'}>{column.type}</span>
                 </td>
                 <td className="mono-num">{column.nulls.toLocaleString()}</td>
-                <td className="mono-num" title="values converted into the column type (R3/R4/R6)">
+                <td
+                  className="mono-num"
+                  title={
+                    conversionsByColumn
+                      .get(column.name)
+                      ?.map((entry) => `${entry.count} × ${entry.kind}`)
+                      .join('\n') || 'values converted into the column type (R3/R4/R6)'
+                  }
+                >
                   {column.conversions.toLocaleString()}
+                </td>
+                <td
+                  className="mono-num"
+                  title="share of this column's values that parsed into its type; the rest are kept as text in <column>_note (T1)"
+                >
+                  {parseByColumn.has(column.name)
+                    ? `${Math.round((parseByColumn.get(column.name)?.rate ?? 0) * 100)}%`
+                    : '–'}
                 </td>
                 <td className="mono-num">{column.filled}</td>
                 <td className="mono-num">{column.unique.toLocaleString()}</td>

@@ -1,10 +1,12 @@
-import type { Dataset, ProgressUpdate } from '../types';
+import type { Dataset, ProgressUpdate, ReviewItem } from '../types';
 import type { DateOrderMode } from '../lib/dates';
+import type { Tuning } from './typing';
 import { detectSource, type SourceKind } from './detect';
 import { extractSource } from './extract/index';
 import { extractArchive } from './extract/archive';
 import { structureExtraction } from './structure';
 import { cleanTable } from './clean';
+import { splitTables, type SplitTable } from './tables';
 import { LIMITS, assertColumnCount, assertRowCount } from './limits';
 
 export interface ProcessOptions {
@@ -19,6 +21,8 @@ export interface ProcessOptions {
   dateOrder?: DateOrderMode;
   /** Review items the user accepted – their suggestion is applied on re-run. */
   acceptReviews?: readonly string[];
+  /** Typing thresholds; used by the fuzz harness to sweep four values each. */
+  tuning?: Partial<Tuning>;
 }
 
 const MAX_ARCHIVE_DEPTH = LIMITS.archiveDepth;
@@ -130,13 +134,45 @@ export async function processBytes(
   assertRowCount(raw.rows.length);
 
   emit({ pct: 62, stage: 'clean', message: 'Cleaning and typing values' });
-  const dataset = cleanTable(raw, name, detection.kind as SourceKind, {
-    dateOrder: options.dateOrder,
-    acceptReviews: options.acceptReviews,
+
+  // S2 – a file can hold more than one table. Each block is cleaned on its own
+  // and becomes its own dataset (the table picker switches between them), so no
+  // row is ever placed under columns it does not belong to.
+  const splits = splitTables(raw);
+  const datasets = splits.map((split) => {
+    const label = splits.length > 1 ? `${name} · table ${split.index} of ${splits.length}` : name;
+    return cleanTable(split.table, label, detection.kind as SourceKind, {
+      dateOrder: options.dateOrder,
+      acceptReviews: options.acceptReviews,
+      tuning: options.tuning,
+    });
   });
 
+  // S2 – the split is applied (each block is its own dataset, switchable in the
+  // picker) but it is still a judgement call about the file, so it is filed for
+  // review with the source rows it came from.
+  if (splits.length > 1) {
+    for (const dataset of datasets) {
+      const split = splits[datasets.indexOf(dataset)] as SplitTable;
+      const item: ReviewItem = {
+        id: `table_split:${dataset.report.fileName}:${split.index}`,
+        kind: 'table_split',
+        column: '',
+        rowIndex: null,
+        original: split.marker ?? '',
+        suggested: `table ${split.index} of ${splits.length} · source rows ${split.firstRow}–${split.lastRow}`,
+        confidence: 0.9,
+        reason: split.marker
+          ? `the file continues after a section marker ("${split.marker}") with a different table; kept as its own dataset with its own columns`
+          : 'a second header row was found below the data; kept as its own dataset with its own columns',
+        applied: true,
+      };
+      dataset.review.push(item);
+      dataset.report.reviewItems.push(item);
+    }
+  }
+
   emit({ pct: 94, stage: 'report', message: 'Compiling quality report' });
-  const result = [dataset];
   emit({ pct: 100, stage: 'done', message: 'Done' });
-  return result;
+  return datasets;
 }
